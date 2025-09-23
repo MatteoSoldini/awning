@@ -142,14 +142,25 @@ p_vec3 p_vec_scale(p_vec3 *v, double f) {
     };
 }
 
-typedef struct {
-    p_vec3 pos;
-    p_vec3 vel;
+p_vec3 p_vec_div(p_vec3 *v1, p_vec3 *v2) {
+    return (p_vec3) {
+        .x = (v2->x != 0.0) ? v1->x / v2->x : 0.0,
+        .y = (v2->y != 0.0) ? v1->y / v2->y : 0.0,
+        .z = (v2->z != 0.0) ? v1->z / v2->z : 0.0
+    };
+}
 
-    p_quat ori; // Orientation (quaternion)
-                // Quaternion are prefered in order to avoid gimbal lock
-                // It is similar to axis-angle representation
-    p_vec3 rot; // Angular velocity (rad/s)
+typedef struct {
+    p_vec3 pos;     // m
+    p_vec3 vel;     // m/s
+
+    p_quat ori;     // Orientation (quaternion)
+                    // Quaternion are prefered in order to avoid gimbal lock
+                    // It is similar to axis-angle representation
+    p_vec3 rot;     // rad/s
+    
+    double mass;    // Kg
+    p_vec3 inertia; // Kg*m^2. It assumes a symmetric body
 } p_rigid_body;
 
 // Constants
@@ -159,24 +170,20 @@ uint64_t p_last_mc = 0;
 // Quadcopter state
 const double kf = 1e-2;     // Thrust coefficient: (N per (rad/s)^2)
 const double arm_l = 0.2;   // Arm length (m)
-const double mass = 2.0;    // Kg
-const p_vec3 inertia = {    // Kg * m^2
-    .x = 0.2,
-    .y = 0.2,
-    .z = 0.4
-};
 
-float base_w = 500.0f;
+float base_w = 25.0f;
 
 double rot_w[4] = {
     0.0, 0.0, 0.0, 0.0
-};  // Rotor angular velocity (rad/s)
+};  // Rotor angular velocities (rad/s)
 
 p_rigid_body obj = {
-    .pos = { 0.0, 0.0, 0.0},        // m
-    .vel = { 0.0, 0.0, 0.0},        // m/s
+    .pos = { 0.0, 0.0, 0.0},
+    .vel = { 0.0, 0.0, 0.0},
     .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
-    .rot = { 0.0, 0.0, 0.0}         // rad/s
+    .rot = { 0.0, 0.0, 0.0},
+    .mass = 2.0,
+    .inertia = { 0.2, 0.2, 0.4 }
 };
 
 uint64_t get_micros() {
@@ -224,7 +231,7 @@ void p_update() {
     // For now we assume ideal thrust model: f = kf * rot_w^2
     p_vec3 mot_f[4] = {0};
     for (size_t i=0; i<4; i++) {
-        mot_f[i].z = kf * rot_w[i];
+        mot_f[i].z = kf * rot_w[i] * rot_w[i];
     }
 
     p_vec3 tot_mot_f = { 0.0, 0.0, 0.0 };
@@ -234,14 +241,18 @@ void p_update() {
 
     // Rotate the thrust to the object orientation
     p_vec3 tot_f = p_vec_rotate_quat(&tot_mot_f, &obj.ori);
-    p_vec3 obj_acc = p_vec_scale(&tot_f, 1/mass);
+    p_vec3 obj_acc = p_vec_scale(&tot_f, 1.0/obj.mass);
     obj_acc.z -= g;
 
     // Linear integrator
+    // v = v_0 + a*dt
+    // x = x_0 + v*dt
     p_vec3 d_vel = p_vec_scale(&obj_acc, dt);
-    obj.pos = p_vec_sum(&obj.pos, &d_vel);
+    obj.vel = p_vec_sum(&obj.vel, &d_vel);
+    p_vec3 d_pos = p_vec_scale(&obj.vel, dt);
+    obj.pos = p_vec_sum(&obj.pos, &d_pos);
     
-    // torque = r x F
+    // torque = r x F (Nm = Kg*m^2/s^2)
     p_vec3 mot_trq[4] = {0};
     for (size_t i=0; i<4; i++) {
         mot_trq[i] = p_vec_cross(&arm_dir[i], &mot_f[i]);
@@ -252,11 +263,19 @@ void p_update() {
         tot_trq = p_vec_sum(&tot_trq, &mot_trq[i]);
     }
 
-    printf("%lf %lf %lf\n", obj.ori.i, obj.ori.j, obj.ori.k);
+    // The change in angular velocity depends on two things:
+    //     we have torque (rather than force),
+    //     and the moment of inertia (rather than mass)
+    // The moment of inertia depends on the mass of the object and the distance
+    // of the mass from the axis of rotation.
+    
+    // ang_acc = torque / inertia
+    // Kg*m^2/s^2 / Kg*m^2 = 1/s^2 = rad/s^2
+    p_vec3 obj_ang_acc = p_vec_div(&tot_trq, &obj.inertia); 
 
-    // rot += torque * dt
-    p_vec3 d_trq = p_vec_scale(&tot_trq, dt);
-    obj.rot = p_vec_sum(&obj.rot, &d_trq);
+    // rot += ang_acc * dt
+    p_vec3 d_rot = p_vec_scale(&obj_ang_acc, dt);
+    obj.rot = p_vec_sum(&obj.rot, &d_rot);
     
     // Rotational integrator
     p_quat wq = { 0.0, obj.rot.x, obj.rot.y, obj.rot.z };
@@ -300,31 +319,31 @@ int main(void) {
         }
         
         if (IsKeyDown(KEY_W)) {
-            rot_w[0] -= 10.0;
-            rot_w[1] -= 10.0;
-            rot_w[2] += 10.0;
-            rot_w[3] += 10.0;
+            rot_w[0] -= 1.0;
+            rot_w[1] -= 1.0;
+            rot_w[2] += 1.0;
+            rot_w[3] += 1.0;
         }
         
         if (IsKeyDown(KEY_D)) {
-            rot_w[0] += 10.0;
-            rot_w[1] -= 10.0;
-            rot_w[2] -= 10.0;
-            rot_w[3] += 10.0;
+            rot_w[0] += 1.0;
+            rot_w[1] -= 1.0;
+            rot_w[2] -= 1.0;
+            rot_w[3] += 1.0;
         }
         
         if (IsKeyDown(KEY_A)) {
-            rot_w[0] -= 10.0;
-            rot_w[1] += 10.0;
-            rot_w[2] += 10.0;
-            rot_w[3] -= 10.0;
+            rot_w[0] -= 1.0;
+            rot_w[1] += 1.0;
+            rot_w[2] += 1.0;
+            rot_w[3] -= 1.0;
         }
         
         if (IsKeyDown(KEY_S)) {
-            rot_w[0] += 10.0;
-            rot_w[1] += 10.0;
-            rot_w[2] -= 10.0;
-            rot_w[3] -= 10.0;
+            rot_w[0] += 1.0;
+            rot_w[1] += 1.0;
+            rot_w[2] -= 1.0;
+            rot_w[3] -= 1.0;
         }
 
         p_update();
@@ -374,8 +393,6 @@ int main(void) {
         BeginDrawing();
             ClearBackground((Color){ 30, 30, 30, 255 });
 
-            GuiSlider((Rectangle){ 0.0, 0.0, 300.0, 20.0 }, "Min", "Max", (float *)&base_w, 0.0, 2000.0);
-
             BeginMode3D(camera);
                 rlPushMatrix();
                     rlTranslatef(obj.pos.x, obj.pos.z, obj.pos.y);
@@ -412,6 +429,8 @@ int main(void) {
                 DrawGrid(10, 1.0f);
             EndMode3D();
 
+            GuiSlider((Rectangle){ 0.0, 0.0, 300.0, 20.0 }, "Min", "Max", (float *)&base_w, 0.0, 50.0);
+            
             DrawFPS(win_w - 100, 10);
 
             char pos_txt[64];
