@@ -1,5 +1,5 @@
 main: main.c
-	if not exist build mkdir build
+	mkdir -p build
 
 	cc \
 		main.c \
@@ -20,4 +20,4 @@ main: main.c
 		-DRAYGUI_IMPLEMENTATION
 
 run: main
-	cd build && main.exe
+	cd build && ./main.exe

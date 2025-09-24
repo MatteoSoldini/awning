@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <time.h>
+#include <stdlib.h>
 
 #include "raylib.h"
 #include "raymath.h"
@@ -18,6 +19,13 @@
 float c_radius = 15.0f;
 float c_yaw_rad = 45.0f * DEG2RAD;
 float c_pitch_rad = 30.0f * DEG2RAD;
+
+// Generate a random gaussian distributed variable using Box–Muller transform
+double rand_gauss() {
+    double u1 = (rand() + 1.0) / (RAND_MAX + 1.0);
+    double u2 = (rand() + 1.0) / (RAND_MAX + 1.0);
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+}
 
 // Physics
 // TODO: Implement fixed timestep (ex. 1khz).
@@ -150,6 +158,18 @@ p_vec3 p_vec_div(p_vec3 *v1, p_vec3 *v2) {
     };
 }
 
+// Using ISA troposphere model (<= 11km)
+// reference: https://www.grc.nasa.gov/www/k-12/airplane/atmosmet.html
+
+// Returns Pa pressure
+double pressure(double alt_m) {
+    const double p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
+    const double t0 = 15.04;  // Celsius    Temperature at sea-level
+
+    double t = t0 - 0.00649 * alt_m;
+    return p0 * pow((t + 273.1) / 288.08, 5.2561);
+}
+
 typedef struct {
     p_vec3 pos;     // m
     p_vec3 vel;     // m/s
@@ -167,8 +187,10 @@ typedef struct {
 const float g = 9.81; // m/s^2
 uint64_t p_last_mc = 0;
 
-// Quadcopter state
-const double kf = 1e-2;     // Thrust coefficient: (N per (rad/s)^2)
+// Quadcopter
+// Reference: https://github.com/PX4/PX4-gazebo-models/tree/6cfb3e362e1424caccb7363dca7e63484e44d188/models/x500_base
+const double kf = 1e-2;     // Thrust coefficient (N / (rad/s)^2)
+const double km = 1e-4;     // Propeller drag coefficient (N / (rad/s)^2)
 const double arm_l = 0.2;   // Arm length (m)
 
 float base_w = 25.0f;
@@ -252,17 +274,30 @@ void p_update() {
     p_vec3 d_pos = p_vec_scale(&obj.vel, dt);
     obj.pos = p_vec_sum(&obj.pos, &d_pos);
     
+    // Torque
     // torque = r x F (Nm = Kg*m^2/s^2)
+    
+    // Motor torque (pitch, roll)
     p_vec3 mot_trq[4] = {0};
     for (size_t i=0; i<4; i++) {
         mot_trq[i] = p_vec_cross(&arm_dir[i], &mot_f[i]);
     }
 
-    p_vec3 tot_trq = { 0.0, 0.0, 0.0 };
+    p_vec3 motor_trq = {0};
     for (size_t i=0; i<4; i++) {
-        tot_trq = p_vec_sum(&tot_trq, &mot_trq[i]);
+        motor_trq = p_vec_sum(&motor_trq, &mot_trq[i]);
     }
 
+    // Propeller drag torque (yaw)
+    // Assuming propellers points precisely straight up (+Z)
+    p_vec3 prop_drag_trq = {0};
+    prop_drag_trq.z = 
+          (km * rot_w[0]*rot_w[0])
+        - (km * rot_w[1]*rot_w[1])
+        + (km * rot_w[2]*rot_w[2])
+        - (km * rot_w[3]*rot_w[3]);
+
+    p_vec3 tot_trq = p_vec_sum(&motor_trq, &prop_drag_trq);
     // The change in angular velocity depends on two things:
     //     we have torque (rather than force),
     //     and the moment of inertia (rather than mass)
@@ -440,6 +475,11 @@ int main(void) {
             DrawText(pos_txt, 210, 30, 24, WHITE);
             sprintf(pos_txt, "Z: %10.2lf", obj.pos.z);
             DrawText(pos_txt, 410, 30, 24, WHITE);
+            
+            char prs_txt[64];
+            sprintf(prs_txt, "P: %10.2lf kPa", pressure(obj.pos.z));
+            DrawText(prs_txt, 10, 50, 24, WHITE);
+
         EndDrawing();
     }
 
