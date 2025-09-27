@@ -6,7 +6,10 @@
 #include <stdint.h>
 #include <time.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <assert.h>
 
+// Raylib
 #include "raylib.h"
 #include "raymath.h"
 #include <raygui.h>
@@ -15,12 +18,16 @@
 #define CAM_MIN_RADIUS 0.5
 #define CAM_SCROLL_SPEED 1.0
 
+#ifndef M_PI
+#    define M_PI 3.14159265358979323846
+#endif
+
 // App state
 float c_radius = 15.0f;
 float c_yaw_rad = 45.0f * DEG2RAD;
 float c_pitch_rad = 30.0f * DEG2RAD;
 
-// Generate a random gaussian distributed variable using Box–Muller transform
+// Generate a random unitary gaussian distributed variable using Box–Muller transform
 double rand_gauss() {
     double u1 = (rand() + 1.0) / (RAND_MAX + 1.0);
     double u2 = (rand() + 1.0) / (RAND_MAX + 1.0);
@@ -193,11 +200,10 @@ const double kf = 1e-2;     // Thrust coefficient (N / (rad/s)^2)
 const double km = 1e-4;     // Propeller drag coefficient (N / (rad/s)^2)
 const double arm_l = 0.2;   // Arm length (m)
 
-float base_w = 25.0f;
-
 double rot_w[4] = {
     0.0, 0.0, 0.0, 0.0
 };  // Rotor angular velocities (rad/s)
+
 
 p_rigid_body obj = {
     .pos = { 0.0, 0.0, 0.0},
@@ -214,15 +220,10 @@ uint64_t get_micros() {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
 }
 
-void p_init() {
-    p_last_mc = get_micros();
-}
+const double p_freq = 1000.0; // Hz
+const double p_dt = 1.0 / p_freq;
 
-void p_update() {
-    uint64_t mc = get_micros();
-    float dt = (float)(mc - p_last_mc) / 1e6; // s
-    p_last_mc = mc;
-
+void p_step() {
     // Compute motors thrust
     // TODO: rotor dynamics, turbulence, ground effect
     // TODO: Consider using RK4 integrator
@@ -245,7 +246,7 @@ void p_update() {
     double s = sqrt(arm_l);
     p_vec3 arm_dir[4] = {
         {.x = s,  .y = -s, .z = 0.0 }, // M0
-        {.x = s, . y = s,  .z = 0.0 }, // M1
+        {.x = s,  .y = s,  .z = 0.0 }, // M1
         {.x = -s, .y = s,  .z = 0.0 }, // M2
         {.x = -s, .y = -s, .z = 0.0 }  // M3
     };
@@ -269,9 +270,9 @@ void p_update() {
     // Linear integrator
     // v = v_0 + a*dt
     // x = x_0 + v*dt
-    p_vec3 d_vel = p_vec_scale(&obj_acc, dt);
+    p_vec3 d_vel = p_vec_scale(&obj_acc, p_dt);
     obj.vel = p_vec_sum(&obj.vel, &d_vel);
-    p_vec3 d_pos = p_vec_scale(&obj.vel, dt);
+    p_vec3 d_pos = p_vec_scale(&obj.vel, p_dt);
     obj.pos = p_vec_sum(&obj.pos, &d_pos);
     
     // Torque
@@ -309,16 +310,16 @@ void p_update() {
     p_vec3 obj_ang_acc = p_vec_div(&tot_trq, &obj.inertia); 
 
     // rot += ang_acc * dt
-    p_vec3 d_rot = p_vec_scale(&obj_ang_acc, dt);
+    p_vec3 d_rot = p_vec_scale(&obj_ang_acc, p_dt);
     obj.rot = p_vec_sum(&obj.rot, &d_rot);
     
     // Rotational integrator
     p_quat wq = { 0.0, obj.rot.x, obj.rot.y, obj.rot.z };
     p_quat dq = p_quat_mul(&obj.ori, &wq);
-    dq.r *= 1.0/2 * dt;
-    dq.i *= 1.0/2 * dt;
-    dq.j *= 1.0/2 * dt;
-    dq.k *= 1.0/2 * dt;
+    dq.r *= 1.0/2 * p_dt;
+    dq.i *= 1.0/2 * p_dt;
+    dq.j *= 1.0/2 * p_dt;
+    dq.k *= 1.0/2 * p_dt;
 
     obj.ori.r += dq.r;
     obj.ori.i += dq.i;
@@ -328,6 +329,107 @@ void p_update() {
     p_quat_norm(&obj.ori);  // Crazy things happens if you don't normalize this
 
     //printf("%lf %lf %lf %lf\n", obj.ori.r, obj.ori.i, obj.ori.j, obj.ori.k);
+}
+
+// Controller
+uint32_t pressure_rdng = 0;
+double p_alt_m = 0.0;
+double i_err = 0.0;
+const double c_dt = 1.0 / 50.0;
+
+void control() {
+    // Convert Pa to m
+    const double p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
+    const double t0 = 15.04;  // Celsius    Temperature at sea-level
+    const double inv_e = 1.0/5.2561;
+    
+    double t = 288.08 * pow((double)pressure_rdng / p0, inv_e) - 273.1;
+    double alt_m = (t0 - t) / 0.00649;
+
+    // Smooth altitude reading
+    double ta = 2.0;
+    double a = 1.0 / ta;
+    alt_m = a * alt_m + (1.0 - a) * p_alt_m;
+
+    // PID altitude control
+    const double tgt_alt_m = 2.0;
+    const double p = 1e1;
+    const double i = 5*1e-4; 
+    const double d = -1.0;
+    
+    double err = tgt_alt_m - alt_m;
+    i_err += err / c_dt;
+    double der = (alt_m - p_alt_m) / c_dt;
+    p_alt_m = alt_m;
+
+    double out = p*err + i*i_err + d*der;
+
+    if (out > 50.0) out = 50.0;
+    if (out < 0.0) out = 0.0;
+
+    //printf("p: %.2lf, i: %.2lf, d: %.2lf\n", p*err, i*i_err, d*der);
+    //printf("err: %.2lf, alt r: %.2lf, alt: %.2lf\n", err, alt_m, obj.pos.z);
+
+    // Set rotor speed
+    for (size_t i=0; i<4; i++) {
+        rot_w[i] = out;
+    }
+}
+
+double p_time_acc = 0.0;
+double s_time_acc = 0.0;
+
+const double s_sdev = 3.0;
+const double s_update_f = 50.0; // Hz
+const double s_update_t = 1.0 / s_update_f;
+const size_t s_bit_mask = 0xFFFFF; // 20-bit reading
+
+void* p_update() {
+    uint64_t last_report_mc = get_micros();
+    size_t step_count = 0; 
+    
+    while (true) {
+        uint64_t now_mc = get_micros();
+        p_time_acc += (now_mc - p_last_mc) / 1e6;
+        s_time_acc += (now_mc - p_last_mc) / 1e6;
+        p_last_mc = now_mc;
+
+        // Update physics
+        // Run multiple times if lagging behind
+        while (p_time_acc >= p_dt) {
+            p_time_acc -= p_dt;
+
+            p_step();
+
+            step_count++;
+        }
+
+        // Update sensor
+        if (s_time_acc >= s_update_t) {
+            s_time_acc -= s_update_t;
+
+            pressure_rdng = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
+
+            control();
+        }
+
+        // Log every 1s
+        if ((now_mc - last_report_mc) >= 1e6) {
+            double hz = step_count / ((now_mc - last_report_mc) / 1e6);
+            
+            printf("Physics step frequency: %.2f Hz\n", hz);
+            
+            step_count = 0;
+            last_report_mc = now_mc;
+        }
+    }
+}
+
+void p_init() {
+    p_last_mc = get_micros();
+    
+    static pthread_t p_thread;
+    assert(pthread_create(&p_thread, NULL, p_update, NULL) == 0);
 }
 
 int main(void) {
@@ -343,16 +445,12 @@ int main(void) {
     camera.fovy = 45.0f;                                // Camera field-of-view Y
     camera.projection = CAMERA_PERSPECTIVE;             // Camera mode type
 
-    //SetTargetFPS(60);
-
+    SetTargetFPS(60);
+    
     p_init();
 
     // Main game loop
     while (!WindowShouldClose()) {
-        for (size_t i=0; i<4; i++) {
-            rot_w[i] = base_w;
-        }
-        
         if (IsKeyDown(KEY_W)) {
             rot_w[0] -= 1.0;
             rot_w[1] -= 1.0;
@@ -380,8 +478,6 @@ int main(void) {
             rot_w[2] -= 1.0;
             rot_w[3] -= 1.0;
         }
-
-        p_update();
 
         int win_w = GetScreenWidth();
         int win_h = GetScreenHeight();
@@ -443,8 +539,8 @@ int main(void) {
 
                     rlMultMatrixf(rot_mtx);
 
-                    DrawCube((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f, 1.0f, 2.0f, RED);
-                    DrawCubeWires((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f, 1.0f, 2.0f, MAROON);
+                    DrawCube((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), RED);
+                    DrawCubeWires((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), MAROON);
                 rlPopMatrix();
                 
                 // Floor tiles
@@ -464,8 +560,6 @@ int main(void) {
                 DrawGrid(10, 1.0f);
             EndMode3D();
 
-            GuiSlider((Rectangle){ 0.0, 0.0, 300.0, 20.0 }, "Min", "Max", (float *)&base_w, 0.0, 50.0);
-            
             DrawFPS(win_w - 100, 10);
 
             char pos_txt[64];
@@ -477,8 +571,9 @@ int main(void) {
             DrawText(pos_txt, 410, 30, 24, WHITE);
             
             char prs_txt[64];
-            sprintf(prs_txt, "P: %10.2lf kPa", pressure(obj.pos.z));
+            sprintf(prs_txt, "P: %u", pressure_rdng);
             DrawText(prs_txt, 10, 50, 24, WHITE);
+            DrawText("Pa", 150, 50, 24, WHITE);
 
         EndDrawing();
     }
