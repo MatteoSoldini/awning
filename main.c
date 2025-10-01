@@ -332,7 +332,6 @@ void p_step() {
 // Sensor parameters
 const double s_upt_fq = 50.0;
 const uint64_t s_udt_mc = 1.0/s_upt_fq * 1e6;
-uint64_t last_s_mc = 0;
 
 const double s_sdev = 3.0;
 const size_t s_bit_mask = 0xFFFFF; // 20-bit reading
@@ -340,23 +339,30 @@ const size_t s_bit_mask = 0xFFFFF; // 20-bit reading
 // Physics parameters
 const double p_upt_fq = 1000.0;
 const uint64_t p_udt_mc = 1.0/p_upt_fq * 1e6;
-uint64_t last_p_mc = 0;
 double p_real_fq = 0.0;
 
 // Controller
 const uint64_t c_udt_mc = 1.0/CONTROL_FQ * 1e6;
-uint64_t last_c_mc = 0;
 
 void* p_update() {
-    uint64_t last_report_mc = get_micros();
+    uint64_t now_mc = get_micros();
+    
+    uint64_t last_report_mc = now_mc;
     size_t p_step_count = 0; 
     
+    uint64_t last_p_mc = now_mc;
+    uint64_t last_s_mc = now_mc;
+    uint64_t last_c_mc = now_mc;
     while (true) {
         uint64_t now_mc = get_micros();
 
         // Update physics
-        if (now_mc - last_p_mc > p_udt_mc) {
-            last_p_mc = now_mc;
+        if (now_mc - last_p_mc >= p_udt_mc) {
+            last_p_mc += p_udt_mc;  // Here, it is better to use the fixed time step.
+                                    // This way we avoid time drift:
+                                    // ex. Suppose that 1002us has passed since last
+                                    // physics step, then we would accumulate 2us (drift)
+                                    // if we use `now_mc`
             
             p_step();
 
@@ -364,15 +370,15 @@ void* p_update() {
         }
 
         // Update sensor
-        if (now_mc - last_s_mc > s_udt_mc) {
-            last_s_mc = now_mc;
+        if (now_mc - last_s_mc >= s_udt_mc) {
+            last_s_mc += s_udt_mc;
             
             ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
         }
 
         // Controller step
-        if (now_mc - last_c_mc > c_udt_mc) {
-            last_c_mc = now_mc;
+        if (now_mc - last_c_mc >= c_udt_mc) {
+            last_c_mc += c_udt_mc;
 
             control_step(&ctrIntr);
         }
