@@ -15,7 +15,7 @@ typedef struct {
     double p_real;
 } PIDState;
 
-// For the moment i assume this parameters are constat
+// For the moment let's assume this parameters constant
 typedef struct {
     const double dt;
     const double p;
@@ -49,8 +49,8 @@ double pid_step(
 size_t l = 0;
 
 PIDParams mot_pid_p = {
-    .p = 15,
-    .i = 1e-3,
+    .p = 20,
+    .i = 0.0, //1e-3,
     .d = 0.0,
     .dt = 1.0/CONTROL_FQ,
     .high = 50.0,
@@ -62,7 +62,7 @@ PIDParams vel_pid_p = {
     .p = 1.0,
     .i = 0.0,
     .d = 0.0,
-    .dt = s_fq,
+    .dt = s_dt,
     .high = 0.5,
     .low = -0.5
 };
@@ -71,6 +71,153 @@ PIDState vel_pid_s = {0};
 double tgt_vel = 0.0;
 double vel = 0.0;
 double p_alt_m = 0.0;
+
+#define MAT_SIZE 64
+typedef struct {
+    size_t r;
+    size_t c;
+    double data[MAT_SIZE];
+} Mat;
+
+// TODO: have a better state estimation for altitude
+// To do this we should implement Kalman Filter
+// * https://kalmanfilter.net/
+
+// A glorified EMA filter
+// Two stages: predict and correct
+// The output is a random (multi)variable
+
+// You have to describe the system dynamics
+// It is nice to represent the filter in matrix notation
+
+Mat mat_mul(Mat *A, Mat *B) {
+    assert(A->c == B->r && "Dimension mismatch");
+
+    Mat C = {.r=A->r, .c=B->c};
+    for (size_t i=0; i<A->r; i++) {
+        for (size_t j=0; j<B->c; j++) {
+            double sum = 0.0;
+            for (size_t k=0; k<A->c; k++) {
+                sum += A->data[i*A->c + k] * B->data[k*B->c + j];
+            }
+            C.data[i*C.c + j] = sum;
+        }
+    }
+    return C;
+}
+
+Mat mat_sum(Mat *A, Mat *B) {
+    assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
+    
+    Mat C = {.r=A->r, .c=A->c};
+    for (size_t i=0; i<A->r*A->c; i++) {
+        C.data[i] = A->data[i] + B->data[i];
+    }
+
+    return C;
+}
+
+Mat mat_sub(Mat *A, Mat *B) {
+    assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
+    
+    Mat C = {.r=A->r, .c=A->c};
+    for (size_t i=0; i<A->r*A->c; i++) {
+        C.data[i] = A->data[i] - B->data[i];
+    }
+
+    return C;
+}
+
+Mat mat_trans(Mat *M) {
+    Mat N = { .r=M->c, .c=M->r };
+    for (size_t r=0; r<N.r; r++) {
+        for (size_t c=0; c<N.c; c++) {
+            N.data[r*N.c + c] = M->data[c*N.r + r];
+        }
+    }
+
+    return N;
+}
+
+void mat_print(Mat *M) {
+    printf("[\n");
+    for (size_t r=0; r<M->r; r++) {
+        for (size_t c=0; c<M->c; c++) {
+            printf("%5.2lf, ", M->data[r*M->c + c]);
+        }
+        printf("\n");
+    }
+    printf("]\n");
+}
+
+// State
+Mat X = { .r=2, .c=1, {
+    0.0,  // pos
+    0.0   // vel
+}};
+
+// State transition matrix
+// it defines how we predict the state to changes
+// basically the physics
+Mat F = { .r=2, .c=2, {
+    // pos, vel
+    1.0,    s_dt,    // pos = pos_0 + v*dt
+    0.0,    1.0      // vel = vel_0 (constant)
+}};
+
+// State certainty
+Mat P = { .r=2, .c=2, {
+    // var(pos), cov
+    0.1,         0.0,
+    // cov,      var(vel)
+    0.0,         0.1,
+}};
+
+// Process noise covariance
+Mat Q = { .r=2, .c=2, {
+    // pos, vel 
+    0.01,   0.0,
+    0.0,    0.25
+}};
+
+// Observation matrix
+// maps from state domain to measurements domain
+Mat H = { .r=1, .c=2, {
+    // pos, vel 
+    1.0,   0.0,     // Just the altitude is measured from the
+                    // pressure sensor
+}};
+
+void kf_step(double alt_m) {
+    // Predict new state
+    // X(n+1) = F*X(n) + G*U(n)
+    Mat X_pred = mat_mul(&F, &X);
+    //Mat Z = mat_mul(&G, &U);
+    //X = mat_sum(&X, &Z);
+    
+    // Predict state covariance
+    // P(n+1) = F*P(n)*F_t + Q
+    Mat P_pred = mat_mul(&F, &P);
+    Mat F_t = mat_trans(&F);
+    P_pred = mat_mul(&P_pred, &F_t);
+    P_pred = mat_sum(&P_pred, &Q);
+
+    // Map state domain to measurements domain
+    Mat Z = {.r=1, .c=1, {
+        alt_m
+    }};
+    Mat HS = mat_mul(&H, &X);
+
+    // Compute innovation
+    Mat I = mat_sub(&Z, &HS);
+
+    // Compute Kalman gain
+    // K = P(n)*H_t(H*P(n)*H_t + R)^-1
+
+    mat_print(&I);
+    // Update state
+    // X = X_pred + K*(z - H*X_pred)
+}
 
 void control_step(ControllerInterface *intr) {
     // Velocity PID
@@ -86,14 +233,16 @@ void control_step(ControllerInterface *intr) {
         double t = 288.08 * pow((double)intr->pressure / p0, inv_e) - 273.1;
         double alt_m = (t0 - t) / 0.00649;
 
-        double ta = 8.0;
+        double ta = 16.0;
         double a = 1.0 / ta;
         alt_m = a * alt_m + (1.0 - a) * p_alt_m;
         
+        kf_step(alt_m);
+
         vel = (alt_m - p_alt_m) / s_dt;
         p_alt_m = alt_m;
 
-        tgt_vel = pid_step(alt_m, 1.0, &vel_pid_p, &vel_pid_s);
+        tgt_vel = pid_step(alt_m, 2.0, &vel_pid_p, &vel_pid_s);
 
         // Smooth altitude reading
 
