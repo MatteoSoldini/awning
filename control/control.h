@@ -7,6 +7,8 @@ typedef struct {
     // Controller Inputs
     int32_t pressure; // Pa
 
+    double real_z;
+
     // Controller Outputs
     double rot_w[4];
 } ControllerInterface;

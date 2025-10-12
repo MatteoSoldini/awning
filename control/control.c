@@ -69,8 +69,6 @@ PIDParams vel_pid_p = {
 PIDState vel_pid_s = {0};
 
 double tgt_vel = 0.0;
-double vel = 0.0;
-double p_alt_m = 0.0;
 
 #define MAT_SIZE 64
 typedef struct {
@@ -139,6 +137,16 @@ Mat mat_trans(Mat *M) {
     return N;
 }
 
+Mat mat_inv2(Mat *M) {
+    // A * A^-1 = I
+    // There's no concept of matrix division.
+    // If we multiply a matrix by an inversed matrix we achieve the same results a division.
+
+    assert(M->c == 2 && M->r == 2);
+
+    // TODO
+}
+
 void mat_print(Mat *M) {
     printf("[\n");
     for (size_t r=0; r<M->r; r++) {
@@ -180,6 +188,10 @@ Mat Q = { .r=2, .c=2, {
     0.0,    0.25
 }};
 
+Mat R = { .r=1, .c=1, {
+    0.25    // m^2
+}};
+
 // Observation matrix
 // maps from state domain to measurements domain
 Mat H = { .r=1, .c=2, {
@@ -190,15 +202,12 @@ Mat H = { .r=1, .c=2, {
 
 void kf_step(double alt_m) {
     // Predict new state
-    // X(n+1) = F*X(n) + G*U(n)
     Mat X_pred = mat_mul(&F, &X);
-    //Mat Z = mat_mul(&G, &U);
-    //X = mat_sum(&X, &Z);
     
     // Predict state covariance
     // P(n+1) = F*P(n)*F_t + Q
-    Mat P_pred = mat_mul(&F, &P);
     Mat F_t = mat_trans(&F);
+    Mat P_pred = mat_mul(&F, &P);
     P_pred = mat_mul(&P_pred, &F_t);
     P_pred = mat_sum(&P_pred, &Q);
 
@@ -206,17 +215,45 @@ void kf_step(double alt_m) {
     Mat Z = {.r=1, .c=1, {
         alt_m
     }};
-    Mat HS = mat_mul(&H, &X);
+    Mat HX = mat_mul(&H, &X_pred);
 
     // Compute innovation
-    Mat I = mat_sub(&Z, &HS);
+    Mat I = mat_sub(&Z, &HX);   // This is in measurement space
+
+    // Compute innovation covariance
+    // S = H * P_pred * H^T + R
+    Mat H_t = mat_trans(&H);
+    Mat HP = mat_mul(&H, &P_pred);
+    Mat S = mat_mul(&HP, &H_t);
+    S = mat_sum(&S, &R);
+    assert(S.r == 1 && S.c == 1);
+
+    Mat S_inv = { .r=1, .c=1, {
+        1.0/S.data[0]
+    }};
 
     // Compute Kalman gain
-    // K = P(n)*H_t(H*P(n)*H_t + R)^-1
-
-    mat_print(&I);
+    // K = P(n)*H_t*S^-1
+    Mat K = mat_mul(&P_pred, &H_t);
+    K = mat_mul(&K, &S_inv);
+    
     // Update state
-    // X = X_pred + K*(z - H*X_pred)
+    // X = X_pred + K * I
+    Mat X_corr = mat_mul(&K, &I);
+    X = mat_sum(&X_pred, &X_corr);
+
+    // Update covariance
+    // P = (Id - K * H) * P_pred
+    Mat KH = mat_mul(&K, &H);   // Map Kalman Gain from measurement domain to state domain
+    
+    assert(KH.r==2 && KH.c==2);
+    Mat Id = { .r=2, .c=2, {
+        1.0, 0.0,
+        0.0, 1.0
+    }};
+    
+    Mat IdminKH = mat_sub(&Id, &KH);
+    P = mat_mul(&IdminKH, &P_pred);
 }
 
 void control_step(ControllerInterface *intr) {
@@ -233,16 +270,11 @@ void control_step(ControllerInterface *intr) {
         double t = 288.08 * pow((double)intr->pressure / p0, inv_e) - 273.1;
         double alt_m = (t0 - t) / 0.00649;
 
-        double ta = 16.0;
-        double a = 1.0 / ta;
-        alt_m = a * alt_m + (1.0 - a) * p_alt_m;
-        
         kf_step(alt_m);
 
-        vel = (alt_m - p_alt_m) / s_dt;
-        p_alt_m = alt_m;
+        printf("real: %lf, pred: %lf\n", intr->real_z, X.data[0]);
 
-        tgt_vel = pid_step(alt_m, 2.0, &vel_pid_p, &vel_pid_s);
+        tgt_vel = pid_step(X.data[0], 2.0, &vel_pid_p, &vel_pid_s);
 
         // Smooth altitude reading
 
@@ -259,7 +291,7 @@ void control_step(ControllerInterface *intr) {
     }
 
     // Motor PID
-    double out = pid_step(vel, tgt_vel, &mot_pid_p, &mot_pid_s);
+    double out = pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
 
     //printf("vel: %10.2lf, out: %10.2lf\n", vel, out);
 

@@ -374,6 +374,7 @@ void* p_update() {
             last_s_mc += s_udt_mc;
             
             ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
+            ctrIntr.real_z = obj.pos.z;
         }
 
         // Controller step
