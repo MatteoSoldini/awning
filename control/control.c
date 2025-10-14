@@ -59,7 +59,7 @@ PIDParams mot_pid_p = {
 PIDState mot_pid_s = {0};
 
 PIDParams vel_pid_p = {
-    .p = 1.0,
+    .p = 2.0,
     .i = 0.0,
     .d = 0.0,
     .dt = s_dt,
@@ -185,7 +185,7 @@ Mat P = { .r=2, .c=2, {
 Mat Q = { .r=2, .c=2, {
     // pos, vel 
     0.01,   0.0,
-    0.0,    0.25
+    0.0,    1.0
 }};
 
 Mat R = { .r=1, .c=1, {
@@ -199,6 +199,15 @@ Mat H = { .r=1, .c=2, {
     1.0,   0.0,     // Just the altitude is measured from the
                     // pressure sensor
 }};
+
+//typedef struct {
+//    Mat X;  // State
+//    Mat F;  // State transition matrix
+//    Mat P;  // State covariance, The uncertanty of the state
+//    Mat Q;  // Process covariance, The uncertanty of the process
+//    Mat R;  // Measurement covariance
+//    Mat H;  // Observation matrix, it maps the state domain to the measurement domain 
+//} KalmanState;
 
 void kf_step(double alt_m) {
     // Predict new state
@@ -271,6 +280,12 @@ void control_step(ControllerInterface *intr) {
         double alt_m = (t0 - t) / 0.00649;
 
         kf_step(alt_m);
+
+#ifdef CONTROL_DEBUG
+        intr->dbg.x_sens = alt_m;
+        intr->dbg.x_pos = X.data[0];
+        intr->dbg.x_vel = X.data[1];
+#endif
 
         //printf("real: %lf, pred: %lf\n", intr->real_z, X.data[0]);
 

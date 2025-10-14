@@ -229,7 +229,8 @@ void cb_push(CircularBuffer *cb, double a) {
     cb->data[cb->top] = a;
 }
 
-CircularBuffer graph_cb = {0};
+CircularBuffer real_alt_cb = {0};
+CircularBuffer k_alt_cb = {0};
 
 const double p_freq = 1000.0; // Hz
 const double p_dt = 1.0 / p_freq;
@@ -387,7 +388,6 @@ void* p_update() {
             last_s_mc += s_udt_mc;
             
             ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
-            ctrIntr.real_z = obj.pos.z;
         }
 
         // Controller step
@@ -395,7 +395,8 @@ void* p_update() {
             last_c_mc += c_udt_mc;
 
             control_step(&ctrIntr);
-            cb_push(&graph_cb, obj.pos.z);
+            cb_push(&real_alt_cb, obj.vel.z);
+            cb_push(&k_alt_cb, ctrIntr.dbg.x_vel);
         }
 
         // Log every 1s
@@ -418,34 +419,39 @@ void DrawGraph(
     int posY,
     int width,
     int height,
-    CircularBuffer *cb,
+    CircularBuffer *cb_real,
+    CircularBuffer *cb_tap,
     double maxV,
     double minV
 ) {
     DrawRectangle(posX, posY, width, height, BLACK);
     
-    Vector2 points[CB_CAPACITY] = {0};
-    size_t cb_idx = cb->top;
-    for (size_t i=0; i<CB_CAPACITY; i++) {
-        cb_idx = (cb_idx + 1) % CB_CAPACITY;
-
-        double value = cb->data[cb_idx];
+    for (size_t b=0; b<2; b++) {
+        CircularBuffer *cb = b==0 ? cb_real : cb_tap;
         
-        // Map from (posY + height, posY) and (minV, maxV)
-        float x = (double)width / CB_CAPACITY * i;
-        
-        // clamp value
-        if (value > maxV) value = maxV;
-        if (value < minV) value = minV;
-        float y = height / (maxV - minV) * -value + posY + height / 2;
+        Vector2 points[CB_CAPACITY] = {0};
+        size_t cb_idx = cb->top;
+        for (size_t i=0; i<CB_CAPACITY; i++) {
+            cb_idx = (cb_idx + 1) % CB_CAPACITY;
 
-        points[i] = (Vector2) {
-            .x = x,
-            .y = y,
-        };
+            double value = cb->data[cb_idx];
+
+            // Map from (posY + height, posY) and (minV, maxV)
+            float x = (double)width / CB_CAPACITY * i;
+
+            // clamp value
+            if (value > maxV) value = maxV;
+            if (value < minV) value = minV;
+            float y = height / (maxV - minV) * -value + posY + height / 2;
+
+            points[i] = (Vector2) {
+                .x = x,
+                .y = y,
+            };
+        }
+
+        DrawLineStrip(points, CB_CAPACITY, b==0 ? RED : WHITE);
     }
-
-    DrawLineStrip(points, CB_CAPACITY, WHITE);
 }
 
 int main(void) {
@@ -472,7 +478,7 @@ int main(void) {
     
     // Fill graph with random data
     for (size_t i=0; i<CB_CAPACITY; i++) {
-        cb_push(&graph_cb, rand_gauss());
+        cb_push(&real_alt_cb, rand_gauss());
     }
 
     // Main game loop
@@ -581,7 +587,7 @@ int main(void) {
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &graph_cb, 2.0, -2.0);
+            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &real_alt_cb, &k_alt_cb, 5.0, -5.0);
 
             DrawTextureRec(
                 target.texture,
@@ -592,9 +598,6 @@ int main(void) {
                 WHITE
             );  // Using this command in order to flip the texture y coordinate
 
-            
-
-            
             //char prs_txt[64];
             //sprintf(prs_txt, "P: %u", ctrIntr.pressure);
             //DrawText(prs_txt, 10, 50, 24, WHITE);
