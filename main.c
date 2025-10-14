@@ -218,6 +218,19 @@ uint64_t get_micros() {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
 }
 
+#define CB_CAPACITY 1024
+typedef struct {
+    size_t top;
+    double data[CB_CAPACITY];
+} CircularBuffer;
+
+void cb_push(CircularBuffer *cb, double a) {
+    cb->top = (cb->top + 1) % CB_CAPACITY;
+    cb->data[cb->top] = a;
+}
+
+CircularBuffer graph_cb = {0};
+
 const double p_freq = 1000.0; // Hz
 const double p_dt = 1.0 / p_freq;
 
@@ -382,6 +395,7 @@ void* p_update() {
             last_c_mc += c_udt_mc;
 
             control_step(&ctrIntr);
+            cb_push(&graph_cb, obj.pos.z);
         }
 
         // Log every 1s
@@ -399,12 +413,50 @@ void p_init() {
     assert(pthread_create(&p_thread, NULL, p_update, NULL) == 0);
 }
 
+void DrawGraph(
+    int posX,
+    int posY,
+    int width,
+    int height,
+    CircularBuffer *cb,
+    double maxV,
+    double minV
+) {
+    DrawRectangle(posX, posY, width, height, BLACK);
+    
+    Vector2 points[CB_CAPACITY] = {0};
+    size_t cb_idx = cb->top;
+    for (size_t i=0; i<CB_CAPACITY; i++) {
+        cb_idx = (cb_idx + 1) % CB_CAPACITY;
+
+        double value = cb->data[cb_idx];
+        
+        // Map from (posY + height, posY) and (minV, maxV)
+        float x = (double)width / CB_CAPACITY * i;
+        
+        // clamp value
+        if (value > maxV) value = maxV;
+        if (value < minV) value = minV;
+        float y = height / (maxV - minV) * -value + posY + height / 2;
+
+        points[i] = (Vector2) {
+            .x = x,
+            .y = y,
+        };
+    }
+
+    DrawLineStrip(points, CB_CAPACITY, WHITE);
+}
+
 int main(void) {
-    const int screenWidth = 1280;
-    const int screenHeight = 720;
+    int win_w = 1280;
+    int win_h = 720;
+    
+    const int panel_size = 300;
+    const int text_size = 24;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(screenWidth, screenHeight, "Awning");
+    InitWindow(win_w, win_h, "Awning");
 
     Camera3D camera = { 0 };
     camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };      // Camera looking at point
@@ -412,42 +464,23 @@ int main(void) {
     camera.fovy = 45.0f;                                // Camera field-of-view Y
     camera.projection = CAMERA_PERSPECTIVE;             // Camera mode type
 
+    RenderTexture2D target = LoadRenderTexture(win_w - panel_size, win_h);
+
     SetTargetFPS(60);
     
     p_init();
+    
+    // Fill graph with random data
+    for (size_t i=0; i<CB_CAPACITY; i++) {
+        cb_push(&graph_cb, rand_gauss());
+    }
 
     // Main game loop
     while (!WindowShouldClose()) {
-        //if (IsKeyDown(KEY_W)) {
-        //    rot_w[0] -= 1.0;
-        //    rot_w[1] -= 1.0;
-        //    rot_w[2] += 1.0;
-        //    rot_w[3] += 1.0;
-        //}
-        
-        //if (IsKeyDown(KEY_D)) {
-        //    rot_w[0] += 1.0;
-        //    rot_w[1] -= 1.0;
-        //    rot_w[2] -= 1.0;
-        //    rot_w[3] += 1.0;
-        //}
-        
-        //if (IsKeyDown(KEY_A)) {
-        //    rot_w[0] -= 1.0;
-        //    rot_w[1] += 1.0;
-        //    rot_w[2] += 1.0;
-        //    rot_w[3] -= 1.0;
-        //}
-        
-        //if (IsKeyDown(KEY_S)) {
-        //    rot_w[0] += 1.0;
-        //    rot_w[1] += 1.0;
-        //    rot_w[2] -= 1.0;
-        //    rot_w[3] -= 1.0;
-        //}
+        win_w = GetScreenWidth();
+        win_h = GetScreenHeight();
 
-        int win_w = GetScreenWidth();
-        int win_h = GetScreenHeight();
+        // TODO: recreate target texture on window resize
 
         if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
             Vector2 mouse_delta = GetMouseDelta();
@@ -458,24 +491,6 @@ int main(void) {
             if (c_pitch_rad > PI/2.0f - 0.1f) c_pitch_rad = PI/2.0f - 0.1f;
             if (c_pitch_rad < -PI/2.0f + 0.1f) c_pitch_rad = -PI/2.0f + 0.1f;
         }
-
-        // if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        //     Vector2 mouse_delta = GetMouseDelta();
-        //     
-        //     Vector3 forward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-        //     Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, camera.up));
-        //     Vector3 up = Vector3Normalize(Vector3CrossProduct(right, forward));
-
-        //     float pan_scale = (c_radius * tanf(camera.fovy * 0.5f * DEG2RAD)) / (GetScreenHeight() * 0.5f);
-
-        //     Vector3 pan = Vector3Add(
-        //         Vector3Scale(right, -mouse_delta.x * pan_scale),
-        //         Vector3Scale(up, mouse_delta.y * pan_scale)
-        //     );
-
-        //     camera.target = Vector3Add(camera.target, pan);
-        //     camera.position = Vector3Add(camera.position, pan);
-        // }
 
         c_radius -= GetMouseWheelMove() * CAM_SCROLL_SPEED;
         if (c_radius < CAM_MIN_RADIUS) c_radius = CAM_MIN_RADIUS;
@@ -488,8 +503,8 @@ int main(void) {
         camera.position.y = camera.target.y + c_radius * sinf(c_pitch_rad);
         camera.position.z = camera.target.z + c_radius * cosf(c_pitch_rad) * sinf(c_yaw_rad);
         
-        BeginDrawing();
-            ClearBackground((Color){ 30, 30, 30, 255 });
+        BeginTextureMode(target);
+            ClearBackground(RAYWHITE);
 
             BeginMode3D(camera);
                 rlPushMatrix();
@@ -526,29 +541,72 @@ int main(void) {
 
                 DrawGrid(10, 1.0f);
             EndMode3D();
+        EndTextureMode();
+        
+        BeginDrawing();
+            ClearBackground((Color){ 30, 30, 30, 255 });
 
-            DrawFPS(win_w - 100, 10);
+            // Draw control panel
+            DrawRectangle(0, 0, panel_size, win_h, Fade(LIGHTGRAY, 0.3f));
+            DrawRectangleLines(0, 0, panel_size, win_h, Fade(LIGHTGRAY, 0.7f));
+
+            int fps = GetFPS();
+            char fps_txt[64];
+            sprintf(fps_txt, "FPS: %i", fps);
+            DrawText(fps_txt, 10, 10, text_size, WHITE);
             
             char p_fq_txt[64];
             sprintf(p_fq_txt, "rPhy: %5.0lf Hz", p_real_fq);
-            DrawText(p_fq_txt, win_w - 200, 60, 24, WHITE);
+            DrawText(p_fq_txt, 10, 10 + text_size, text_size, WHITE);
+            
+            DrawLineEx(
+                (Vector2){0, 10 + 2*text_size},
+                (Vector2){panel_size, 10 + 2*text_size},
+                2.0,
+                (Color){150, 150, 150, 255}
+            );
 
             char pos_txt[64];
-            sprintf(pos_txt, "X: %10.2lf", obj.pos.x);
-            DrawText(pos_txt, 10, 30, 24, WHITE);
-            sprintf(pos_txt, "Y: %10.2lf", obj.pos.y);
-            DrawText(pos_txt, 210, 30, 24, WHITE);
-            sprintf(pos_txt, "Z: %10.2lf", obj.pos.z);
-            DrawText(pos_txt, 410, 30, 24, WHITE);
+            sprintf(pos_txt, "X: %10.2lfm", obj.pos.x);
+            DrawText(pos_txt, 10, 2*10 + 2*text_size, text_size, WHITE);
+            sprintf(pos_txt, "Y: %10.2lfm", obj.pos.y);
+            DrawText(pos_txt, 10, 2*10 + 3*text_size, text_size, WHITE);
+            sprintf(pos_txt, "Z: %10.2lfm", obj.pos.z);
+            DrawText(pos_txt, 10, 2*10 + 4*text_size, text_size, WHITE);
             
-            char prs_txt[64];
-            sprintf(prs_txt, "P: %u", ctrIntr.pressure);
-            DrawText(prs_txt, 10, 50, 24, WHITE);
-            DrawText("Pa", 150, 50, 24, WHITE);
+            DrawLineEx(
+                (Vector2){0, 2*10 + 5*text_size},
+                (Vector2){panel_size, 2*10 + 5*text_size},
+                2.0,
+                (Color){150, 150, 150, 255}
+            );
+            
+            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &graph_cb, 2.0, -2.0);
+
+            DrawTextureRec(
+                target.texture,
+                (Rectangle){
+                    0, 0,
+                    (float)target.texture.width, -(float)target.texture.height },
+                (Vector2){ panel_size, 0 },
+                WHITE
+            );  // Using this command in order to flip the texture y coordinate
+
+            
+
+            
+            //char prs_txt[64];
+            //sprintf(prs_txt, "P: %u", ctrIntr.pressure);
+            //DrawText(prs_txt, 10, 50, 24, WHITE);
+            //DrawText("Pa", 150, 50, 24, WHITE);
 
         EndDrawing();
+        
+       // bool wait;
+       // scanf("%c", &wait);
     }
 
+    UnloadRenderTexture(target);
     CloseWindow();        // Close window and OpenGL context
 
     return 0;

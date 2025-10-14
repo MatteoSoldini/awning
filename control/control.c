@@ -272,7 +272,7 @@ void control_step(ControllerInterface *intr) {
 
         kf_step(alt_m);
 
-        printf("real: %lf, pred: %lf\n", intr->real_z, X.data[0]);
+        //printf("real: %lf, pred: %lf\n", intr->real_z, X.data[0]);
 
         tgt_vel = pid_step(X.data[0], 2.0, &vel_pid_p, &vel_pid_s);
 
