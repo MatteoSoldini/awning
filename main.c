@@ -218,7 +218,7 @@ uint64_t get_micros() {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
 }
 
-#define CB_CAPACITY 1024
+#define CB_CAPACITY 128
 typedef struct {
     size_t top;
     double data[CB_CAPACITY];
@@ -388,6 +388,9 @@ void* p_update() {
             last_s_mc += s_udt_mc;
             
             ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
+            
+            cb_push(&real_alt_cb, obj.vel.z);
+            cb_push(&k_alt_cb, ctrIntr.dbg.x_vel);
         }
 
         // Controller step
@@ -395,8 +398,6 @@ void* p_update() {
             last_c_mc += c_udt_mc;
 
             control_step(&ctrIntr);
-            cb_push(&real_alt_cb, obj.vel.z);
-            cb_push(&k_alt_cb, ctrIntr.dbg.x_vel);
         }
 
         // Log every 1s
@@ -587,7 +588,7 @@ int main(void) {
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &real_alt_cb, &k_alt_cb, 5.0, -5.0);
+            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &real_alt_cb, &k_alt_cb, 2.0, -2.0);
 
             DrawTextureRec(
                 target.texture,

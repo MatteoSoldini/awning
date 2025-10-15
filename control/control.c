@@ -49,12 +49,12 @@ double pid_step(
 size_t l = 0;
 
 PIDParams mot_pid_p = {
-    .p = 20,
-    .i = 0.0, //1e-3,
-    .d = 0.0,
+    .p = 10,
+    .i = 0.0,
+    .d = 1.0,
     .dt = 1.0/CONTROL_FQ,
-    .high = 50.0,
-    .low = 10.0
+    .high = 10.0,
+    .low = -5.0
 };
 PIDState mot_pid_s = {0};
 
@@ -181,11 +181,17 @@ Mat P = { .r=2, .c=2, {
     0.0,         0.1,
 }};
 
+// Control transition matrix
+Mat B = { .r=2, .c=1, {
+    0.5 * s_dt*s_dt,  // pos
+    s_dt              // vel
+}};
+
 // Process noise covariance
 Mat Q = { .r=2, .c=2, {
     // pos, vel 
     0.01,   0.0,
-    0.0,    1.0
+    0.0,    0.01
 }};
 
 Mat R = { .r=1, .c=1, {
@@ -209,9 +215,14 @@ Mat H = { .r=1, .c=2, {
 //    Mat H;  // Observation matrix, it maps the state domain to the measurement domain 
 //} KalmanState;
 
-void kf_step(double alt_m) {
+void kf_step(
+    Mat *Z, // Measurements matrix
+    Mat *U  // Control input matrix
+) {
     // Predict new state
-    Mat X_pred = mat_mul(&F, &X);
+    Mat FX = mat_mul(&F, &X);
+    Mat BU = mat_mul(&B, U);
+    Mat X_pred = mat_sum(&FX, &BU);
     
     // Predict state covariance
     // P(n+1) = F*P(n)*F_t + Q
@@ -221,13 +232,10 @@ void kf_step(double alt_m) {
     P_pred = mat_sum(&P_pred, &Q);
 
     // Map state domain to measurements domain
-    Mat Z = {.r=1, .c=1, {
-        alt_m
-    }};
     Mat HX = mat_mul(&H, &X_pred);
 
     // Compute innovation
-    Mat I = mat_sub(&Z, &HX);   // This is in measurement space
+    Mat I = mat_sub(Z, &HX);   // This is in measurement space
 
     // Compute innovation covariance
     // S = H * P_pred * H^T + R
@@ -265,7 +273,13 @@ void kf_step(double alt_m) {
     P = mat_mul(&IdminKH, &P_pred);
 }
 
+double out = 0.0;
+
 void control_step(ControllerInterface *intr) {
+    const double kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
+    const double mass = 2.0; // Kg
+    const double g = 9.81;
+    
     // Velocity PID
     l++;
     if (l >= s_loops) {
@@ -279,7 +293,18 @@ void control_step(ControllerInterface *intr) {
         double t = 288.08 * pow((double)intr->pressure / p0, inv_e) - 273.1;
         double alt_m = (t0 - t) / 0.00649;
 
-        kf_step(alt_m);
+        // Kalman filter step
+        Mat Z = { .r=1, .c=1, {alt_m} };
+        
+        double thrust = 0.0;
+        for (size_t i=0; i<4; i++) {
+            thrust += kf * out * out;
+        }
+        
+        Mat U = { .r=1, .c=1, {
+            thrust / mass - g   // accel
+        }};
+        kf_step(&Z, &U);
 
 #ifdef CONTROL_DEBUG
         intr->dbg.x_sens = alt_m;
@@ -306,7 +331,8 @@ void control_step(ControllerInterface *intr) {
     }
 
     // Motor PID
-    double out = pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
+    const double hover_thrust = 20.0;
+    out = hover_thrust + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
 
     //printf("vel: %10.2lf, out: %10.2lf\n", vel, out);
 
