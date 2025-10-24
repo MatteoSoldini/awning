@@ -9,6 +9,12 @@ const size_t s_loops = CONTROL_FQ / s_fq;
 
 const double s_dt = 1.0 / s_fq;
 
+const double kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
+const double mass = 2.0; // Kg
+const double g = 9.81;
+
+const double imu_acc_max_value = 8.0*g; // m/s^2
+
 // This should only be touched by the pid function
 typedef struct {
     double i_err;
@@ -44,9 +50,6 @@ double pid_step(
     return out;
 }
 
-// Assume that the control_step() function is triggered by an interrupt
-// in the MCU every 1ms (1000Hz)
-size_t l = 0;
 
 PIDParams mot_pid_p = {
     .p = 10,
@@ -275,10 +278,10 @@ void kf_step(
 
 double out = 0.0;
 
+// Assume that the control_step() function is triggered by an interrupt
+// in the MCU every 1ms (1000Hz)
+size_t l = 0;
 void control_step(ControllerInterface *intr) {
-    const double kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
-    const double mass = 2.0; // Kg
-    const double g = 9.81;
     
     // Velocity PID
     l++;
@@ -307,11 +310,9 @@ void control_step(ControllerInterface *intr) {
         kf_step(&Z, &U);
 
 #ifdef CONTROL_DEBUG
-        intr->dbg.x_sens = alt_m;
-        intr->dbg.x_pos = X.data[0];
-        intr->dbg.x_vel = X.data[1];
+        intr->dbg.val1 = alt_m;
+        intr->dbg.val2 = intr->acc_z;
 #endif
-
         //printf("real: %lf, pred: %lf\n", intr->real_z, X.data[0]);
 
         tgt_vel = pid_step(X.data[0], 2.0, &vel_pid_p, &vel_pid_s);

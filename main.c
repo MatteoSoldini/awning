@@ -184,6 +184,7 @@ double pressure(double alt_m) {
 typedef struct {
     p_vec3 pos;     // m
     p_vec3 vel;     // m/s
+    p_vec3 acc;     // m/s^2
 
     p_quat ori;     // Orientation (quaternion)
                     // Quaternion are prefered in order to avoid gimbal lock
@@ -206,6 +207,7 @@ const double arm_l = 0.2;   // Arm length (m)
 p_rigid_body obj = {
     .pos = { 0.0, 0.0, 0.0},
     .vel = { 0.0, 0.0, 0.0},
+    .acc = { 0.0, 0.0, 0.0},
     .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
     .rot = { 0.0, 0.0, 0.0},
     .mass = 2.0,
@@ -229,8 +231,8 @@ void cb_push(CircularBuffer *cb, double a) {
     cb->data[cb->top] = a;
 }
 
-CircularBuffer real_alt_cb = {0};
-CircularBuffer k_alt_cb = {0};
+CircularBuffer val1_cb = {0};
+CircularBuffer val2_cb = {0};
 
 const double p_freq = 1000.0; // Hz
 const double p_dt = 1.0 / p_freq;
@@ -255,7 +257,7 @@ void p_step() {
     //    ->        <-
     //    ccw       cw
     
-    double s = sqrt(arm_l);
+    double s = arm_l / sqrt(2.0);
     p_vec3 arm_dir[4] = {
         {.x = s,  .y = -s, .z = 0.0 }, // M0
         {.x = s,  .y = s,  .z = 0.0 }, // M1
@@ -276,17 +278,17 @@ void p_step() {
 
     // Rotate the thrust to the object orientation
     p_vec3 tot_f = p_vec_rotate_quat(&tot_mot_f, &obj.ori);
-    p_vec3 obj_acc = p_vec_scale(&tot_f, 1.0/obj.mass);
-    obj_acc.z -= g;
+    obj.acc = p_vec_scale(&tot_f, 1.0/obj.mass);
+    obj.acc.z -= g;
 
     // Linear integrator
     // v = v_0 + a*dt
     // x = x_0 + v*dt
-    p_vec3 d_vel = p_vec_scale(&obj_acc, p_dt);
+    p_vec3 d_vel = p_vec_scale(&obj.acc, p_dt);
     obj.vel = p_vec_sum(&obj.vel, &d_vel);
     p_vec3 d_pos = p_vec_scale(&obj.vel, p_dt);
     obj.pos = p_vec_sum(&obj.pos, &d_pos);
-    
+
     // Torque
     // torque = r x F (Nm = Kg*m^2/s^2)
     
@@ -343,12 +345,22 @@ void p_step() {
     //printf("%lf %lf %lf %lf\n", obj.ori.r, obj.ori.i, obj.ori.j, obj.ori.k);
 }
 
-// Sensor parameters
+// Barometer parameters
+// reference: BMP390
 const double s_upt_fq = 50.0;
 const uint64_t s_udt_mc = 1.0/s_upt_fq * 1e6;
-
 const double s_sdev = 3.0;
-const size_t s_bit_mask = 0xFFFFF; // 20-bit reading
+const size_t s_read_bits = 20;
+const size_t s_bit_mask = (1 << s_read_bits) - 1;
+
+// IMU parameters
+// reference: IIM42653
+const double imu_upt_fq = 200.0;
+const uint64_t imu_udt_mc = 1.0/imu_upt_fq * 1e6;
+const double imu_sdev = 0.00637;
+const size_t imu_read_bits = 16;
+const size_t imu_bit_mask = (1 << imu_read_bits) - 1;
+const double imu_acc_max_value = 8.0*g;    // m/s^2
 
 // Physics parameters
 const double p_upt_fq = 1000.0;
@@ -366,7 +378,9 @@ void* p_update() {
     
     uint64_t last_p_mc = now_mc;
     uint64_t last_s_mc = now_mc;
+    uint64_t last_imu_mc = now_mc;
     uint64_t last_c_mc = now_mc;
+
     while (true) {
         uint64_t now_mc = get_micros();
 
@@ -383,14 +397,35 @@ void* p_update() {
             p_step_count++;
         }
 
-        // Update sensor
+        // Update barometer
         if (now_mc - last_s_mc >= s_udt_mc) {
             last_s_mc += s_udt_mc;
             
             ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
             
-            cb_push(&real_alt_cb, obj.vel.z);
-            cb_push(&k_alt_cb, ctrIntr.dbg.x_vel);
+            cb_push(&val1_cb, obj.acc.z);
+            //cb_push(&val2_cb, );
+        }
+        
+        // Update IMU
+        if (now_mc - last_imu_mc >= imu_udt_mc) {
+            last_imu_mc += imu_udt_mc;
+            
+            // Real accelerometer read acceleration + gravity
+            p_vec3 imu_w_acc = obj.acc;
+            imu_w_acc.z -= g;
+
+            // Convert world accel to body frame (rotate by inverse quaternion)
+            p_quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
+            p_vec3 imu_b_acc = p_vec_rotate_quat(&imu_w_acc, &q_inv);
+
+            p_vec3 imu_noise = { rand_gauss(), rand_gauss(), rand_gauss() };
+            imu_noise = p_vec_scale(&imu_noise, imu_sdev);
+            p_vec3 imu_acc_reading = p_vec_dot(&imu_b_acc, &imu_noise);
+
+            ctrIntr.acc_x = (imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask;
+            ctrIntr.acc_y = (imu_acc_reading.y / imu_acc_max_value) * imu_bit_mask;
+            ctrIntr.acc_z = (imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask;
         }
 
         // Controller step
@@ -479,7 +514,7 @@ int main(void) {
     
     // Fill graph with random data
     for (size_t i=0; i<CB_CAPACITY; i++) {
-        cb_push(&real_alt_cb, rand_gauss());
+        cb_push(&val1_cb, rand_gauss());
     }
 
     // Main game loop
@@ -588,7 +623,7 @@ int main(void) {
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &real_alt_cb, &k_alt_cb, 2.0, -2.0);
+            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &val1_cb, &val2_cb, 2.0, -2.0);
 
             DrawTextureRec(
                 target.texture,
