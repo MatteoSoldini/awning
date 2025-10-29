@@ -4,16 +4,23 @@
 #include <math.h>
 #include <assert.h>
 
-const double s_fq = 50; // Make sure it's divisible by CONTROL_FQ
-const size_t s_loops = CONTROL_FQ / s_fq;
+const double c_dt = 1.0 / CONTROL_FQ;
 
-const double s_dt = 1.0 / s_fq;
+// Quadcopter physics
+static const double kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
+static const double mass = 2.0; // Kg
+static const double g = 9.81;
 
-const double kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
-const double mass = 2.0; // Kg
-const double g = 9.81;
+// Barometer sensor
+const double bar_fq = 50.0;  // Make sure it's divisible by CONTROL_FQ
+const size_t bar_loops = CONTROL_FQ / bar_fq;
+const double bar_dt = 1.0 / bar_fq;
 
-const double imu_acc_max_value = 8.0*g; // m/s^2
+// IMU sensor
+const double imu_fq = 200.0; // Make sure it's divisible by CONTROL_FQ
+const size_t imu_loops = CONTROL_FQ / imu_fq;
+const double imu_dt = 1.0 / imu_fq;
+static const double imu_acc_max_value = 8.0*g; // m/s^2
 
 // This should only be touched by the pid function
 typedef struct {
@@ -55,7 +62,7 @@ PIDParams mot_pid_p = {
     .p = 10,
     .i = 0.0,
     .d = 1.0,
-    .dt = 1.0/CONTROL_FQ,
+    .dt = c_dt,
     .high = 10.0,
     .low = -5.0
 };
@@ -65,7 +72,7 @@ PIDParams vel_pid_p = {
     .p = 2.0,
     .i = 0.0,
     .d = 0.0,
-    .dt = s_dt,
+    .dt = c_dt,
     .high = 0.5,
     .low = -0.5
 };
@@ -80,8 +87,6 @@ typedef struct {
     double data[MAT_SIZE];
 } Mat;
 
-// TODO: have a better state estimation for altitude
-// To do this we should implement Kalman Filter
 // * https://kalmanfilter.net/
 
 // A glorified EMA filter
@@ -162,52 +167,45 @@ void mat_print(Mat *M) {
 }
 
 // State
-Mat X = { .r=2, .c=1, {
+Mat X = { .r=3, .c=1, {
     0.0,  // pos
-    0.0   // vel
+    0.0,  // vel
+    0.0   // acc
 }};
 
 // State transition matrix
 // it defines how we predict the state to changes
 // basically the physics
-Mat F = { .r=2, .c=2, {
-    // pos, vel
-    1.0,    s_dt,    // pos = pos_0 + v*dt
-    0.0,    1.0      // vel = vel_0 (constant)
+Mat F = { .r=3, .c=3, {
+    // pos, vel, acc
+       1.0, c_dt, 0.5*c_dt*c_dt, // pos = pos_0 + 1/2*a*dt^2
+       0.0, 1.0, c_dt,          // vel = vel_0 + a*dt
+       0.0, 0.0, 1.0            // constant acceleration
 }};
 
 // State certainty
-Mat P = { .r=2, .c=2, {
-    // var(pos), cov
-    0.1,         0.0,
-    // cov,      var(vel)
-    0.0,         0.1,
+Mat P = { .r=3, .c=3, {
+    // pos, vel, acc
+       0.1, 0.0, 0.0,
+       0.0, 0.1, 0.0,
+       0.0, 0.0, 0.1
 }};
 
 // Control transition matrix
-Mat B = { .r=2, .c=1, {
-    0.5 * s_dt*s_dt,  // pos
-    s_dt              // vel
+Mat B = { .r=3, .c=1, {
+    0.5 * c_dt*c_dt,  // pos
+    c_dt,             // vel
+    1.0               // acc
 }};
 
 // Process noise covariance
-Mat Q = { .r=2, .c=2, {
+Mat Q = { .r=3, .c=3, {
     // pos, vel 
-    0.01,   0.0,
-    0.0,    0.01
+       0.01, 0.0,  0.0,
+       0.0,  0.01, 0.0,
+       0.0,  0.0,  0.1,
 }};
 
-Mat R = { .r=1, .c=1, {
-    0.25    // m^2
-}};
-
-// Observation matrix
-// maps from state domain to measurements domain
-Mat H = { .r=1, .c=2, {
-    // pos, vel 
-    1.0,   0.0,     // Just the altitude is measured from the
-                    // pressure sensor
-}};
 
 //typedef struct {
 //    Mat X;  // State
@@ -218,34 +216,42 @@ Mat H = { .r=1, .c=2, {
 //    Mat H;  // Observation matrix, it maps the state domain to the measurement domain 
 //} KalmanState;
 
-void kf_step(
-    Mat *Z, // Measurements matrix
-    Mat *U  // Control input matrix
+Mat P_pred = {0};
+
+void kf_predict(
+    Mat *U
 ) {
     // Predict new state
+    // X = F*X + B*U
     Mat FX = mat_mul(&F, &X);
     Mat BU = mat_mul(&B, U);
-    Mat X_pred = mat_sum(&FX, &BU);
+    X = mat_sum(&FX, &BU);
     
     // Predict state covariance
     // P(n+1) = F*P(n)*F_t + Q
     Mat F_t = mat_trans(&F);
-    Mat P_pred = mat_mul(&F, &P);
+    P_pred = mat_mul(&F, &P);
     P_pred = mat_mul(&P_pred, &F_t);
-    P_pred = mat_sum(&P_pred, &Q);
+    P = mat_sum(&P_pred, &Q);
+}
 
+void kf_correct(
+    Mat *Z, // Measurements matrix
+    Mat *H, // Observation matrix
+    Mat *R  // Measurement noise
+) {
     // Map state domain to measurements domain
-    Mat HX = mat_mul(&H, &X_pred);
+    Mat HX = mat_mul(H, &X);
 
     // Compute innovation
     Mat I = mat_sub(Z, &HX);   // This is in measurement space
 
     // Compute innovation covariance
     // S = H * P_pred * H^T + R
-    Mat H_t = mat_trans(&H);
-    Mat HP = mat_mul(&H, &P_pred);
+    Mat H_t = mat_trans(H);
+    Mat HP = mat_mul(H, &P_pred);
     Mat S = mat_mul(&HP, &H_t);
-    S = mat_sum(&S, &R);
+    S = mat_sum(&S, R);
     assert(S.r == 1 && S.c == 1);
 
     Mat S_inv = { .r=1, .c=1, {
@@ -253,23 +259,24 @@ void kf_step(
     }};
 
     // Compute Kalman gain
-    // K = P(n)*H_t*S^-1
+    // K = P_pred*H_t*S^-1
     Mat K = mat_mul(&P_pred, &H_t);
     K = mat_mul(&K, &S_inv);
     
     // Update state
     // X = X_pred + K * I
     Mat X_corr = mat_mul(&K, &I);
-    X = mat_sum(&X_pred, &X_corr);
+    X = mat_sum(&X, &X_corr);
 
     // Update covariance
     // P = (Id - K * H) * P_pred
-    Mat KH = mat_mul(&K, &H);   // Map Kalman Gain from measurement domain to state domain
+    Mat KH = mat_mul(&K, H);   // Map Kalman Gain from measurement domain to state domain
     
-    assert(KH.r==2 && KH.c==2);
-    Mat Id = { .r=2, .c=2, {
-        1.0, 0.0,
-        0.0, 1.0
+    assert(KH.r==3 && KH.c==3);
+    Mat Id = { .r=3, .c=3, {
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
     }};
     
     Mat IdminKH = mat_sub(&Id, &KH);
@@ -277,16 +284,29 @@ void kf_step(
 }
 
 double out = 0.0;
+double alt_m = 0.0;
 
 // Assume that the control_step() function is triggered by an interrupt
 // in the MCU every 1ms (1000Hz)
-size_t l = 0;
+size_t bar_l = 0;
+size_t imu_l = 0;
 void control_step(ControllerInterface *intr) {
+    bar_l++;
+    imu_l++;
     
-    // Velocity PID
-    l++;
-    if (l >= s_loops) {
-        l=0;
+    double thrust = 0.0;
+    for (size_t i=0; i<4; i++) {
+        thrust += kf * out * out;
+    }
+    
+    Mat U = { .r=1, .c=1, {
+        thrust / mass - g   // accel
+    }};
+    kf_predict(&U);
+
+    // Read sensors
+    if (bar_l >= bar_loops) {
+        bar_l=0;
 
         // Convert Pa to m
         const double p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
@@ -294,50 +314,49 @@ void control_step(ControllerInterface *intr) {
         const double inv_e = 1.0/5.2561;
     
         double t = 288.08 * pow((double)intr->pressure / p0, inv_e) - 273.1;
-        double alt_m = (t0 - t) / 0.00649;
+        alt_m = (t0 - t) / 0.00649;
 
-        // Kalman filter step
-        Mat Z = { .r=1, .c=1, {alt_m} };
-        
-        double thrust = 0.0;
-        for (size_t i=0; i<4; i++) {
-            thrust += kf * out * out;
-        }
-        
-        Mat U = { .r=1, .c=1, {
-            thrust / mass - g   // accel
+        Mat Z = { .r=1, .c=1, { alt_m } };
+        Mat R = { .r=1, .c=1, {
+            0.25    // m^2
         }};
-        kf_step(&Z, &U);
-
-#ifdef CONTROL_DEBUG
-        intr->dbg.val1 = alt_m;
-        intr->dbg.val2 = intr->acc_z;
-#endif
-        //printf("real: %lf, pred: %lf\n", intr->real_z, X.data[0]);
-
-        tgt_vel = pid_step(X.data[0], 2.0, &vel_pid_p, &vel_pid_s);
-
-        // Smooth altitude reading
-
-        // PID altitude control
-        //const double tgt_alt_m = 2.0;
-        //const double p = 1e1;
-        //const double i = 5.0; 
-        //const double d = -2.0;
-
-        //printf("p: %.2lf, i: %.2lf, d: %.2lf\n", p*err, i*i_err, d*der);
-        //printf("err: %.2lf, alt r: %.2lf, alt: %.2lf\n", err, alt_m, obj.pos.z);
-
-        // Set rotor speed
+        Mat H = { .r=1, .c=3, {
+            // pos, vel, acc
+               1.0, 0.0, 0.0
+        }};
+        kf_correct(&Z, &H, &R);
     }
+    //if (imu_l >= imu_loops) {
+    //    imu_l=0;
 
+    //    double acc_z = intr->imu_acc_z / imu_acc_max_value;
+    //    Mat Z = { .r=1, .c=1, { acc_z } };
+    //    Mat R = { .r=1, .c=1, {
+    //        0.25    // m^2
+    //    }};
+    //    Mat H = { .r=1, .c=3, {
+    //        // pos, vel, acc 
+    //           1.0, 0.0, 0.0
+    //    }};
+    //}
+
+    // Velocity PID
+    tgt_vel = pid_step(X.data[0], 2.0, &vel_pid_p, &vel_pid_s);
+    
     // Motor PID
     const double hover_thrust = 20.0;
-    out = hover_thrust + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
+    out = hover_thrust + pid_step(X.data[2], tgt_vel, &mot_pid_p, &mot_pid_s);
 
     //printf("vel: %10.2lf, out: %10.2lf\n", vel, out);
 
     for (size_t i=0; i<4; i++) {
         intr->rot_w[i] = out;
     }
+
+#ifdef CONTROL_DEBUG
+    intr->dbg.pos_z = X.data[0];
+    intr->dbg.vel_z = X.data[1];
+    intr->dbg.acc_z = X.data[2];
+    intr->dbg.alt_m_rdng = alt_m;
+#endif
 }

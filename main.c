@@ -403,7 +403,9 @@ void* p_update() {
             
             ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
             
-            cb_push(&val1_cb, obj.acc.z);
+            cb_push(&val1_cb, obj.vel.z);
+            printf("%lf\n", ctrIntr.dbg.vel_z);
+            cb_push(&val2_cb, ctrIntr.dbg.vel_z);
             //cb_push(&val2_cb, );
         }
         
@@ -421,11 +423,11 @@ void* p_update() {
 
             p_vec3 imu_noise = { rand_gauss(), rand_gauss(), rand_gauss() };
             imu_noise = p_vec_scale(&imu_noise, imu_sdev);
-            p_vec3 imu_acc_reading = p_vec_dot(&imu_b_acc, &imu_noise);
+            p_vec3 imu_acc_reading = p_vec_sum(&imu_b_acc, &imu_noise);
 
-            ctrIntr.acc_x = (imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask;
-            ctrIntr.acc_y = (imu_acc_reading.y / imu_acc_max_value) * imu_bit_mask;
-            ctrIntr.acc_z = (imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask;
+            ctrIntr.imu_acc_x = (imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask;
+            ctrIntr.imu_acc_y = (imu_acc_reading.y / imu_acc_max_value) * imu_bit_mask;
+            ctrIntr.imu_acc_z = (imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask;
         }
 
         // Controller step
@@ -496,6 +498,7 @@ int main(void) {
     
     const int panel_size = 300;
     const int text_size = 24;
+    const int graph_height = 200;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(win_w, win_h, "Awning");
@@ -623,7 +626,7 @@ int main(void) {
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, 2*10 + 5*text_size, panel_size, 200, &val1_cb, &val2_cb, 2.0, -2.0);
+            DrawGraph(0, 2*10 + 5*text_size, panel_size, graph_height, &val1_cb, &val2_cb, 5.0, -5.0);
 
             DrawTextureRec(
                 target.texture,

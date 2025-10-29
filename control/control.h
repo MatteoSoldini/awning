@@ -6,16 +6,18 @@
 #define CONTROL_DEBUG
 
 typedef struct {
-    double val1;
-    double val2;
+    double pos_z; // m
+    double vel_z; // m/s
+    double acc_z; // m/s^2
+    double alt_m_rdng; // m
 } DebugInterface;
 
 typedef struct {
     // Controller Inputs
     uint32_t pressure; // Pa
-    int16_t acc_x; // m/s^2
-    int16_t acc_y; // m/s^2
-    int16_t acc_z; // m/s^2
+    int16_t imu_acc_x;
+    int16_t imu_acc_y;
+    int16_t imu_acc_z;
 
     // Controller Outputs
     double rot_w[4];
