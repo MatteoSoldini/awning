@@ -358,7 +358,7 @@ const size_t s_bit_mask = (1 << s_read_bits) - 1;
 const double imu_upt_fq = 200.0;
 const uint64_t imu_udt_mc = 1.0/imu_upt_fq * 1e6;
 const double imu_sdev = 0.00637;
-const size_t imu_read_bits = 16;
+const size_t imu_read_bits = 15;
 const size_t imu_bit_mask = (1 << imu_read_bits) - 1;
 const double imu_acc_max_value = 8.0*g;    // m/s^2
 
@@ -403,9 +403,9 @@ void* p_update() {
             
             ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
             
-            cb_push(&val1_cb, obj.vel.z);
-            printf("%lf\n", ctrIntr.dbg.vel_z);
-            cb_push(&val2_cb, ctrIntr.dbg.vel_z);
+            //printf("%lf\n", ctrIntr.dbg.acc_z);
+            cb_push(&val1_cb, obj.acc.z);
+            cb_push(&val2_cb, ctrIntr.dbg.acc_z);
             //cb_push(&val2_cb, );
         }
         
@@ -424,10 +424,10 @@ void* p_update() {
             p_vec3 imu_noise = { rand_gauss(), rand_gauss(), rand_gauss() };
             imu_noise = p_vec_scale(&imu_noise, imu_sdev);
             p_vec3 imu_acc_reading = p_vec_sum(&imu_b_acc, &imu_noise);
-
-            ctrIntr.imu_acc_x = (imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask;
+            
+            ctrIntr.imu_acc_x = (int16_t)((imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask);
             ctrIntr.imu_acc_y = (imu_acc_reading.y / imu_acc_max_value) * imu_bit_mask;
-            ctrIntr.imu_acc_z = (imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask;
+            ctrIntr.imu_acc_z = (int16_t)((imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask);
         }
 
         // Controller step

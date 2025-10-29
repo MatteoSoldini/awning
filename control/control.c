@@ -73,8 +73,8 @@ PIDParams vel_pid_p = {
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
-    .high = 0.5,
-    .low = -0.5
+    .high = 1.0,
+    .low = -1.0
 };
 PIDState vel_pid_s = {0};
 
@@ -178,9 +178,9 @@ Mat X = { .r=3, .c=1, {
 // basically the physics
 Mat F = { .r=3, .c=3, {
     // pos, vel, acc
-       1.0, c_dt, 0.5*c_dt*c_dt, // pos = pos_0 + 1/2*a*dt^2
-       0.0, 1.0, c_dt,          // vel = vel_0 + a*dt
-       0.0, 0.0, 1.0            // constant acceleration
+       1.0, 0.0, 0.0, // pos = pos_0
+       0.0, 1.0, 0.0, // vel = vel_0
+       0.0, 0.0, 0.0  // constant acceleration
 }};
 
 // State certainty
@@ -201,9 +201,9 @@ Mat B = { .r=3, .c=1, {
 // Process noise covariance
 Mat Q = { .r=3, .c=3, {
     // pos, vel 
-       0.01, 0.0,  0.0,
-       0.0,  0.01, 0.0,
-       0.0,  0.0,  0.1,
+       1e-3, 0.0,  0.0,
+       0.0,  1e-3, 0.0,
+       0.0,  0.0,  1e-2,
 }};
 
 
@@ -247,13 +247,13 @@ void kf_correct(
     Mat I = mat_sub(Z, &HX);   // This is in measurement space
 
     // Compute innovation covariance
-    // S = H * P_pred * H^T + R
+    // S = H * P_pred * H_t + R
     Mat H_t = mat_trans(H);
     Mat HP = mat_mul(H, &P_pred);
     Mat S = mat_mul(&HP, &H_t);
     S = mat_sum(&S, R);
+    
     assert(S.r == 1 && S.c == 1);
-
     Mat S_inv = { .r=1, .c=1, {
         1.0/S.data[0]
     }};
@@ -283,7 +283,7 @@ void kf_correct(
     P = mat_mul(&IdminKH, &P_pred);
 }
 
-double out = 0.0;
+double out_w = 0.0;
 double alt_m = 0.0;
 
 // Assume that the control_step() function is triggered by an interrupt
@@ -296,7 +296,7 @@ void control_step(ControllerInterface *intr) {
     
     double thrust = 0.0;
     for (size_t i=0; i<4; i++) {
-        thrust += kf * out * out;
+        thrust += kf * out_w * out_w;
     }
     
     Mat U = { .r=1, .c=1, {
@@ -326,31 +326,33 @@ void control_step(ControllerInterface *intr) {
         }};
         kf_correct(&Z, &H, &R);
     }
-    //if (imu_l >= imu_loops) {
-    //    imu_l=0;
+    if (imu_l >= imu_loops) {
+        imu_l=0;
 
-    //    double acc_z = intr->imu_acc_z / imu_acc_max_value;
-    //    Mat Z = { .r=1, .c=1, { acc_z } };
-    //    Mat R = { .r=1, .c=1, {
-    //        0.25    // m^2
-    //    }};
-    //    Mat H = { .r=1, .c=3, {
-    //        // pos, vel, acc 
-    //           1.0, 0.0, 0.0
-    //    }};
-    //}
+        double acc_z = ((double)intr->imu_acc_z / INT16_MAX) * imu_acc_max_value + g;
+        //printf("%lf\n", acc_z);
+        Mat Z = { .r=1, .c=1, { acc_z } };
+        Mat R = { .r=1, .c=1, {
+            0.00637    // m^2/s
+        }};
+        Mat H = { .r=1, .c=3, {
+            // pos, vel, acc 
+               0.0, 0.0, 1.0
+        }};
+        kf_correct(&Z, &H, &R);
+    }
 
     // Velocity PID
-    tgt_vel = pid_step(X.data[0], 2.0, &vel_pid_p, &vel_pid_s);
+    tgt_vel = pid_step(X.data[0], 10.0, &vel_pid_p, &vel_pid_s);
     
     // Motor PID
     const double hover_thrust = 20.0;
-    out = hover_thrust + pid_step(X.data[2], tgt_vel, &mot_pid_p, &mot_pid_s);
+    out_w = hover_thrust + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
 
     //printf("vel: %10.2lf, out: %10.2lf\n", vel, out);
 
     for (size_t i=0; i<4; i++) {
-        intr->rot_w[i] = out;
+        intr->rot_w[i] = out_w;
     }
 
 #ifdef CONTROL_DEBUG
