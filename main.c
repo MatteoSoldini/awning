@@ -38,12 +38,7 @@ double rand_gauss() {
     return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
 }
 
-// Physics
-// TODO: Implement fixed timestep (ex. 1khz).
-//       We should consider moving physics to a different thread.
-
 // The physics world assumes Z up
-
 typedef struct {
     double x;
     double y;
@@ -137,6 +132,14 @@ p_vec3 p_vec_sum(p_vec3 *v1, p_vec3 *v2) {
     };
 }
 
+p_vec3 p_vec_sub(p_vec3 *v1, p_vec3 *v2) {
+    return (p_vec3) {
+        .x = v1->x - v2->x,
+        .y = v1->y - v2->y,
+        .z = v1->z - v2->z
+    };
+}
+
 p_vec3 p_vec_dot(p_vec3 *v1, p_vec3 *v2) {
     return (p_vec3) {
         .x = v1->x * v2->x,
@@ -169,6 +172,14 @@ p_vec3 p_vec_div(p_vec3 *v1, p_vec3 *v2) {
     };
 }
 
+p_vec3 p_vec_abs(p_vec3 *v) {
+    return (p_vec3) {
+        .x = fabs(v->x),
+        .y = fabs(v->y),
+        .z = fabs(v->z)
+    };
+}
+
 // Using ISA troposphere model (<= 11km)
 // reference: https://www.grc.nasa.gov/www/k-12/airplane/atmosmet.html
 
@@ -195,8 +206,11 @@ typedef struct {
     p_vec3 inertia; // Kg*m^2. It assumes a symmetric body
 } p_rigid_body;
 
-// Constants
-const float g = 9.81; // m/s^2
+// Physics world
+const double g = 9.81; // m/s^2
+const double air_rho = 1.293; // Density of pure, dry air at a temperature of 273 K
+                              // and a pressure of 101.325 kPa.
+p_vec3 wind = { 0.0, 0.0, 0.0 }; // Uniform wind (m/s^2)
 
 // Quadcopter
 // Reference: https://github.com/PX4/PX4-gazebo-models/tree/6cfb3e362e1424caccb7363dca7e63484e44d188/models/x500_base
@@ -208,10 +222,10 @@ const double tau_m = 0.05;     // Motor time constant (s)
 const double rot_max_w = 50.0; // Max rotor rotation speed (rad/s)
 
 p_rigid_body obj = {
-    .pos = { 0.0, 0.0, 0.0},
+    .pos = { 0.0, 0.0, 0.5},
     .vel = { 0.0, 0.0, 0.0},
     .acc = { 0.0, 0.0, 0.0},
-    .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
+    .ori = { 1.0, 0.01, 0.0, 0.0},   // (this should be normalized to 1)
     .rot = { 0.0, 0.0, 0.0},
     .mass = 2.0,
     .inertia = { 0.2, 0.2, 0.4 }
@@ -242,9 +256,11 @@ CircularBuffer val2_cb = {0};
 const double p_freq = 1000.0; // Hz
 const double p_dt = 1.0 / p_freq;
 
+// TODO: all the physics here could be implemented as matrix operations.
+// This way we can unify the code for vec and matrix
 void p_step() {
     // Compute motors thrust
-    // TODO: rotor dynamics, turbulence, ground effect
+    // TODO: Add ground effect
     // TODO: Consider using RK4 integrator
     //
     //         ^
@@ -303,6 +319,30 @@ void p_step() {
     p_vec3 tot_f = p_vec_rotate_quat(&tot_mot_f, &obj.ori);
     obj.acc = p_vec_scale(&tot_f, 1.0/obj.mass);
     obj.acc.z -= g;
+    
+    // Compute wind
+    // TODO: Use p_vec3 drag coefficient: the drag changes based on where the wind
+    // hits the drone
+    // TODO: Add gusts
+
+    // Aerodynamic drag
+    // F = -1/2 * air_rho * Cd * A * rel_vel^2
+    // rho -> Air density (Kg/m^3)
+    // Cd -> Drag coefficient
+    // A -> Cross-section area (m^2)
+    const double Cd = 1.0;
+    const double Axy = 0.05;
+
+    p_vec3 rel_vel = p_vec_sub(&wind, &obj.vel);
+    p_vec3 abs_vel = p_vec_abs(&rel_vel);
+    p_vec3 rel_vel_sign_sq = p_vec_dot(&abs_vel, &rel_vel);
+
+    p_vec3 drag = p_vec_scale(&rel_vel_sign_sq, -0.5*air_rho*Cd*Axy);
+    p_vec3 wind_acc = p_vec_scale(&drag, 1.0/obj.mass);
+
+    //printf("x=%lf, y=%lf, z=%lf\n", wind_acc.x, wind_acc.y, wind_acc.z);
+
+    obj.acc = p_vec_sum(&obj.acc, &wind_acc);
 
     // Linear integrator
     // v = v_0 + a*dt
@@ -378,12 +418,17 @@ const size_t s_bit_mask = (1 << s_read_bits) - 1;
 
 // IMU parameters
 // reference: IIM42653
+// TODO: add bias
 const double imu_upt_fq = 200.0;
 const uint64_t imu_udt_mc = 1.0/imu_upt_fq * 1e6;
-const double imu_sdev = 0.00637;
 const size_t imu_read_bits = 15;
 const size_t imu_bit_mask = (1 << imu_read_bits) - 1;
-const double imu_acc_max_value = 8.0*g;    // m/s^2
+
+const double imu_acc_sdev = 0.00637;
+const double imu_acc_max_value = 8.0*g;     // m/s^2  TO CHECK
+
+const double imu_acc_sdev = 0.05 * DEG2RAD; // rad/s
+const double imu_rot_max_value = 250.0;     // rad/s  TO CHECK
 
 // Physics parameters
 const double p_upt_fq = 1000.0;
@@ -445,7 +490,7 @@ void* p_update() {
             p_vec3 imu_b_acc = p_vec_rotate_quat(&imu_w_acc, &q_inv);
 
             p_vec3 imu_noise = { rand_gauss(), rand_gauss(), rand_gauss() };
-            imu_noise = p_vec_scale(&imu_noise, imu_sdev);
+            imu_noise = p_vec_scale(&imu_noise, imu_acc_sdev);
             p_vec3 imu_acc_reading = p_vec_sum(&imu_b_acc, &imu_noise);
             
             ctr_intr.imu_acc_x = (int16_t)((imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask);

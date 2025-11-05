@@ -25,6 +25,9 @@ typedef struct {
     int16_t imu_acc_x;
     int16_t imu_acc_y;
     int16_t imu_acc_z;
+    int16_t imu_rot_x;
+    int16_t imu_rot_y;
+    int16_t imu_rot_z;
 
     // Controller Outputs
     double rot_cmd[4]; // [0, 1]
