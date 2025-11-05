@@ -6,10 +6,17 @@
 #define CONTROL_DEBUG
 
 typedef struct {
+    // State prediction
     double pos_z; // m
     double vel_z; // m/s
     double acc_z; // m/s^2
+
+    // Sensor readings
     double alt_m_rdng; // m
+    double acc_z_rdng; // m/s^2
+
+    // PIDs
+    double pid_out_vel;
 } DebugInterface;
 
 typedef struct {
@@ -20,7 +27,7 @@ typedef struct {
     int16_t imu_acc_z;
 
     // Controller Outputs
-    double rot_w[4];
+    double rot_cmd[4]; // [0, 1]
 
     // Controller Debug
 #ifdef CONTROL_DEBUG

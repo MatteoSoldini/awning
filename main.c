@@ -29,7 +29,7 @@ float c_radius = 15.0f;
 float c_yaw_rad = 45.0f * DEG2RAD;
 float c_pitch_rad = 30.0f * DEG2RAD;
 
-ControllerInterface ctrIntr = {0};
+ControllerInterface ctr_intr = {0};
 
 // Generate a random unitary gaussian distributed variable using Box–Muller transform
 double rand_gauss() {
@@ -200,9 +200,12 @@ const float g = 9.81; // m/s^2
 
 // Quadcopter
 // Reference: https://github.com/PX4/PX4-gazebo-models/tree/6cfb3e362e1424caccb7363dca7e63484e44d188/models/x500_base
-const double kf = 1e-2;     // Thrust coefficient (N / (rad/s)^2)
-const double km = 1e-4;     // Propeller drag coefficient (N / (rad/s)^2)
-const double arm_l = 0.2;   // Arm length (m)
+// https://ieeexplore.ieee.org/document/6289431
+const double kf = 1e-2;        // Thrust coefficient (N / (rad/s)^2)
+const double km = 1e-4;        // Propeller drag coefficient (N / (rad/s)^2)
+const double arm_l = 0.2;      // Arm length (m)
+const double tau_m = 0.05;     // Motor time constant (s)
+const double rot_max_w = 50.0; // Max rotor rotation speed (rad/s)
 
 p_rigid_body obj = {
     .pos = { 0.0, 0.0, 0.0},
@@ -213,6 +216,8 @@ p_rigid_body obj = {
     .mass = 2.0,
     .inertia = { 0.2, 0.2, 0.4 }
 };
+
+double rot_w[4] = {0};
 
 uint64_t get_micros() {
     struct timespec ts;
@@ -265,10 +270,28 @@ void p_step() {
         {.x = -s, .y = -s, .z = 0.0 }  // M3
     };
     
+    // Convert controller command to motor rotation
+    double cmd_rot_w[4] = {0};
+    for (size_t i=0;i<4;i++) {
+        double cmd = ctr_intr.rot_cmd[i];
+
+        // Clamp command
+        if (cmd < 0.0) cmd = 0.0;
+        if (cmd > 1.0) cmd = 1.0;
+        
+        cmd_rot_w[i] = cmd * rot_max_w;
+    }
+
+    // Let's model the motor rotation as a first order system:
+    // rot_w(t) = rot_w(t-1) + (cmd_rot - rot_w(t-1)) * (dt / tau_m)
+    for (size_t i=0; i<4; i++) {
+        rot_w[i] += (cmd_rot_w[i] - rot_w[i]) * (p_dt / tau_m);
+    }
+
     // For now we assume ideal thrust model: f = kf * rot_w^2
     p_vec3 mot_f[4] = {0};
     for (size_t i=0; i<4; i++) {
-        mot_f[i].z = kf * ctrIntr.rot_w[i] * ctrIntr.rot_w[i];
+        mot_f[i].z = kf * rot_w[i] * rot_w[i];
     }
 
     p_vec3 tot_mot_f = { 0.0, 0.0, 0.0 };
@@ -307,10 +330,10 @@ void p_step() {
     // Assuming propellers points precisely straight up (+Z)
     p_vec3 prop_drag_trq = {0};
     prop_drag_trq.z = 
-          (km * ctrIntr.rot_w[0]*ctrIntr.rot_w[0])
-        - (km * ctrIntr.rot_w[1]*ctrIntr.rot_w[1])
-        + (km * ctrIntr.rot_w[2]*ctrIntr.rot_w[2])
-        - (km * ctrIntr.rot_w[3]*ctrIntr.rot_w[3]);
+          (km * rot_w[0]*rot_w[0])
+        - (km * rot_w[1]*rot_w[1])
+        + (km * rot_w[2]*rot_w[2])
+        - (km * rot_w[3]*rot_w[3]);
 
     p_vec3 tot_trq = p_vec_sum(&motor_trq, &prop_drag_trq);
     // The change in angular velocity depends on two things:
@@ -401,11 +424,11 @@ void* p_update() {
         if (now_mc - last_s_mc >= s_udt_mc) {
             last_s_mc += s_udt_mc;
             
-            ctrIntr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
+            ctr_intr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
             
-            //printf("%lf\n", ctrIntr.dbg.acc_z);
+            //printf("%lf\n", ctr_intr.dbg.acc_z);
             cb_push(&val1_cb, obj.acc.z);
-            cb_push(&val2_cb, ctrIntr.dbg.acc_z);
+            cb_push(&val2_cb, ctr_intr.dbg.acc_z_rdng);
             //cb_push(&val2_cb, );
         }
         
@@ -425,16 +448,16 @@ void* p_update() {
             imu_noise = p_vec_scale(&imu_noise, imu_sdev);
             p_vec3 imu_acc_reading = p_vec_sum(&imu_b_acc, &imu_noise);
             
-            ctrIntr.imu_acc_x = (int16_t)((imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask);
-            ctrIntr.imu_acc_y = (imu_acc_reading.y / imu_acc_max_value) * imu_bit_mask;
-            ctrIntr.imu_acc_z = (int16_t)((imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask);
+            ctr_intr.imu_acc_x = (int16_t)((imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask);
+            ctr_intr.imu_acc_y = (imu_acc_reading.y / imu_acc_max_value) * imu_bit_mask;
+            ctr_intr.imu_acc_z = (int16_t)((imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask);
         }
 
         // Controller step
         if (now_mc - last_c_mc >= c_udt_mc) {
             last_c_mc += c_udt_mc;
 
-            control_step(&ctrIntr);
+            control_step(&ctr_intr);
         }
 
         // Log every 1s
@@ -638,7 +661,7 @@ int main(void) {
             );  // Using this command in order to flip the texture y coordinate
 
             //char prs_txt[64];
-            //sprintf(prs_txt, "P: %u", ctrIntr.pressure);
+            //sprintf(prs_txt, "P: %u", ctr_intr.pressure);
             //DrawText(prs_txt, 10, 50, 24, WHITE);
             //DrawText("Pa", 150, 50, 24, WHITE);
 

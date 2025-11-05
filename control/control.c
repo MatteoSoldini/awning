@@ -59,12 +59,12 @@ double pid_step(
 
 
 PIDParams mot_pid_p = {
-    .p = 10,
+    .p = 0.3,
     .i = 0.0,
-    .d = 1.0,
+    .d = 0.0,
     .dt = c_dt,
-    .high = 10.0,
-    .low = -5.0
+    .high = 0.5,
+    .low = -0.5
 };
 PIDState mot_pid_s = {0};
 
@@ -77,8 +77,6 @@ PIDParams vel_pid_p = {
     .low = -1.0
 };
 PIDState vel_pid_s = {0};
-
-double tgt_vel = 0.0;
 
 #define MAT_SIZE 64
 typedef struct {
@@ -145,7 +143,7 @@ Mat mat_trans(Mat *M) {
     return N;
 }
 
-Mat mat_inv2(Mat *M) {
+Mat mat_inv(Mat *M) {
     // A * A^-1 = I
     // There's no concept of matrix division.
     // If we multiply a matrix by an inversed matrix we achieve the same results a division.
@@ -176,11 +174,12 @@ Mat X = { .r=3, .c=1, {
 // State transition matrix
 // it defines how we predict the state to changes
 // basically the physics
+
 Mat F = { .r=3, .c=3, {
     // pos, vel, acc
-       1.0, 0.0, 0.0, // pos = pos_0
-       0.0, 1.0, 0.0, // vel = vel_0
-       0.0, 0.0, 0.0  // constant acceleration
+       1.0, c_dt, 0.5*c_dt*c_dt, // pos = pos_0
+       0.0, 1.0,  c_dt, // vel = vel_0
+       0.0, 0.0,  1.0  // constant acceleration
 }};
 
 // State certainty
@@ -191,21 +190,13 @@ Mat P = { .r=3, .c=3, {
        0.0, 0.0, 0.1
 }};
 
-// Control transition matrix
-Mat B = { .r=3, .c=1, {
-    0.5 * c_dt*c_dt,  // pos
-    c_dt,             // vel
-    1.0               // acc
-}};
-
 // Process noise covariance
 Mat Q = { .r=3, .c=3, {
     // pos, vel 
        1e-3, 0.0,  0.0,
-       0.0,  1e-3, 0.0,
-       0.0,  0.0,  1e-2,
+       0.0,  1e-2, 0.0,
+       0.0,  0.0,  1e-1,
 }};
-
 
 //typedef struct {
 //    Mat X;  // State
@@ -219,12 +210,13 @@ Mat Q = { .r=3, .c=3, {
 Mat P_pred = {0};
 
 void kf_predict(
-    Mat *U
+    Mat *B, // Control transition matrix
+    Mat *U  // Control matrix
 ) {
     // Predict new state
     // X = F*X + B*U
     Mat FX = mat_mul(&F, &X);
-    Mat BU = mat_mul(&B, U);
+    Mat BU = mat_mul(B, U);
     X = mat_sum(&FX, &BU);
     
     // Predict state covariance
@@ -283,9 +275,6 @@ void kf_correct(
     P = mat_mul(&IdminKH, &P_pred);
 }
 
-double out_w = 0.0;
-double alt_m = 0.0;
-
 // Assume that the control_step() function is triggered by an interrupt
 // in the MCU every 1ms (1000Hz)
 size_t bar_l = 0;
@@ -294,15 +283,17 @@ void control_step(ControllerInterface *intr) {
     bar_l++;
     imu_l++;
     
-    double thrust = 0.0;
-    for (size_t i=0; i<4; i++) {
-        thrust += kf * out_w * out_w;
-    }
+    Mat B = { .r=3, .c=1, {
+        0.0,  // pos
+        0.0,  // vel
+        0.0   // acc
+    }};
     
     Mat U = { .r=1, .c=1, {
-        thrust / mass - g   // accel
+        0.0
     }};
-    kf_predict(&U);
+    
+    kf_predict(&B, &U);
 
     // Read sensors
     if (bar_l >= bar_loops) {
@@ -314,7 +305,11 @@ void control_step(ControllerInterface *intr) {
         const double inv_e = 1.0/5.2561;
     
         double t = 288.08 * pow((double)intr->pressure / p0, inv_e) - 273.1;
-        alt_m = (t0 - t) / 0.00649;
+        double alt_m = (t0 - t) / 0.00649;
+
+#ifdef CONTROL_DEBUG
+        intr->dbg.alt_m_rdng = alt_m;
+#endif
 
         Mat Z = { .r=1, .c=1, { alt_m } };
         Mat R = { .r=1, .c=1, {
@@ -330,7 +325,11 @@ void control_step(ControllerInterface *intr) {
         imu_l=0;
 
         double acc_z = ((double)intr->imu_acc_z / INT16_MAX) * imu_acc_max_value + g;
-        //printf("%lf\n", acc_z);
+        
+#ifdef CONTROL_DEBUG
+        intr->dbg.acc_z_rdng = acc_z;
+#endif
+
         Mat Z = { .r=1, .c=1, { acc_z } };
         Mat R = { .r=1, .c=1, {
             0.00637    // m^2/s
@@ -343,22 +342,20 @@ void control_step(ControllerInterface *intr) {
     }
 
     // Velocity PID
-    tgt_vel = pid_step(X.data[0], 10.0, &vel_pid_p, &vel_pid_s);
+    double tgt_vel = pid_step(X.data[0], 10.0, &vel_pid_p, &vel_pid_s);
     
     // Motor PID
-    const double hover_thrust = 20.0;
-    out_w = hover_thrust + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
-
-    //printf("vel: %10.2lf, out: %10.2lf\n", vel, out);
+    const double hover_cmd = 0.3;
+    double out_cmd = hover_cmd + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
 
     for (size_t i=0; i<4; i++) {
-        intr->rot_w[i] = out_w;
+        intr->rot_cmd[i] = out_cmd;
     }
 
 #ifdef CONTROL_DEBUG
     intr->dbg.pos_z = X.data[0];
     intr->dbg.vel_z = X.data[1];
     intr->dbg.acc_z = X.data[2];
-    intr->dbg.alt_m_rdng = alt_m;
+    intr->dbg.pid_out_vel = tgt_vel;
 #endif
 }
