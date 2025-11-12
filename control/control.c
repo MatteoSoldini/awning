@@ -4,6 +4,9 @@
 #include <math.h>
 #include <assert.h>
 
+#define PI 3.14159265358979323846
+#define DEG2RAD (PI/180.0f)
+
 const double c_dt = 1.0 / CONTROL_FQ;
 
 // Quadcopter physics
@@ -21,6 +24,7 @@ const double imu_fq = 200.0; // Make sure it's divisible by CONTROL_FQ
 const size_t imu_loops = CONTROL_FQ / imu_fq;
 const double imu_dt = 1.0 / imu_fq;
 static const double imu_acc_max_value = 8.0*g; // m/s^2
+static const double imu_rot_max_value = 250.0; // rad/s
 
 // This should only be touched by the pid function
 typedef struct {
@@ -78,7 +82,7 @@ PIDParams vel_pid_p = {
 };
 PIDState vel_pid_s = {0};
 
-#define MAT_SIZE 64
+#define MAT_SIZE 128
 typedef struct {
     size_t r;
     size_t c;
@@ -143,14 +147,58 @@ Mat mat_trans(Mat *M) {
     return N;
 }
 
+Mat mat_identity(size_t size) {
+    Mat I = {0};
+    I.r = size;
+    I.c = size;
+    for (size_t i=0; i<size; i++) {
+        I.data[size*i + i] = 1.0;
+    }
+
+    return I;
+}
+
 Mat mat_inv(Mat *M) {
     // A * A^-1 = I
     // There's no concept of matrix division.
     // If we multiply a matrix by an inversed matrix we achieve the same results a division.
 
-    assert(M->c == 2 && M->r == 2);
+    // We're going to use Gauss-Jordan elimination here
+    // source: https://en.wikipedia.org/wiki/Gaussian_elimination
 
-    // TODO
+    // Row operations:
+    // * Swapping two rows,
+    // * Multiplying a row by a nonzero number,
+    // * Adding a multiple of one row to another row.
+
+    assert(M->c == M->r);
+
+    size_t size = M->c;
+
+    // To simplify things for the moment let's assume that elements resides only on the diagonal
+    for (size_t r=0; r<M->r; r++) {
+        for (size_t c=0; c<M->c; c++) {
+            if (r==c) continue;
+            assert(M->data[r*M->c + c] == 0.0 && "Matrix has elements outside the diagonal");
+        }
+    }
+
+    Mat M_inv = *M;
+    for (size_t i=0; i<size; i++) {
+        M_inv.data[i*size + i] = 1.0 / M_inv.data[i*size + i];
+    }
+
+    // Test code
+    //Mat I_test = mat_mul(M, &M_inv);
+    //Mat I_known = mat_identity(size);
+
+    //for (size_t r=0; r<M->r; r++) {
+    //    for (size_t c=0; c<M->c; c++) {
+    //        assert(I_test.data[r*I_test.r + c] == I_known.data[r*I_known.r + c]);
+    //    }
+    //}
+
+    return M_inv;
 }
 
 void mat_print(Mat *M) {
@@ -164,48 +212,66 @@ void mat_print(Mat *M) {
     printf("]\n");
 }
 
+// TODO: There should be a smartest/cleaner way to populate these matrices.
+// Like a enum for indexing
+
 // State
-Mat X = { .r=3, .c=1, {
-    0.0,  // pos
-    0.0,  // vel
-    0.0   // acc
+Mat X = { .r=9, .c=1, {
+    0.0, // pos_z (m)
+    0.0, // vel_z (m/s)
+    0.0, // acc_z (m/s^2)
+    0.0, // ori_x (rad)         // TODO: Using Euler angles, this is good enough for small angles.
+    0.0, // ori_y (rad)         // but we should later move on to quaternions
+    0.0, // ori_z (rad)
+    0.0, // rot_x (rad/s)
+    0.0, // rot_y (rad/s)
+    0.0  // rot_z (rad/s)
 }};
 
 // State transition matrix
 // it defines how we predict the state to changes
 // basically the physics
 
-Mat F = { .r=3, .c=3, {
-    // pos, vel, acc
-       1.0, c_dt, 0.5*c_dt*c_dt, // pos = pos_0
-       0.0, 1.0,  c_dt, // vel = vel_0
-       0.0, 0.0,  1.0  // constant acceleration
+Mat F = { .r=9, .c=9, {
+    // pos_z, vel_z,  acc_z,         ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
+       1.0,   c_dt,   0.5*c_dt*c_dt, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    // pos_z
+       0.0,   1.0,    c_dt,          0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    // vel_z
+       0.0,   0.0,    1.0,           0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    // acc_z
+       0.0,   0.0,    0.0,           1.0,   0.0,   0.0,   c_dt,  0.0,   0.0,    // ori_x
+       0.0,   0.0,    0.0,           0.0,   1.0,   0.0,   0.0,   c_dt,  0.0,    // ori_y
+       0.0,   0.0,    0.0,           0.0,   0.0,   1.0,   0.0,   0.0,   c_dt,   // ori_z
+       0.0,   0.0,    0.0,           0.0,   0.0,   0.0,   1.0,   0.0,   0.0,    // rot_x
+       0.0,   0.0,    0.0,           0.0,   0.0,   0.0,   0.0,   1.0,   0.0,    // rot_y
+       0.0,   0.0,    0.0,           0.0,   0.0,   0.0,   0.0,   0.0,   1.0     // rot_z
 }};
 
 // State certainty
-Mat P = { .r=3, .c=3, {
-    // pos, vel, acc
-       0.1, 0.0, 0.0,
-       0.0, 0.1, 0.0,
-       0.0, 0.0, 0.1
+Mat P = { .r=9, .c=9, {
+    // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
+       0.1,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.1,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.1,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.1,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.1,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.1,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.1,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.1,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.1
 }};
 
 // Process noise covariance
-Mat Q = { .r=3, .c=3, {
-    // pos, vel 
-       1e-3, 0.0,  0.0,
-       0.0,  1e-2, 0.0,
-       0.0,  0.0,  1e-1,
+Mat Q = { .r=9, .c=9, {
+    // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
+       1e-3,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   1e-2,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   1e-1,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   1e-2,  0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   1e-2,  0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   1e-2,  0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-1,  0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-1,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-1
 }};
-
-//typedef struct {
-//    Mat X;  // State
-//    Mat F;  // State transition matrix
-//    Mat P;  // State covariance, The uncertanty of the state
-//    Mat Q;  // Process covariance, The uncertanty of the process
-//    Mat R;  // Measurement covariance
-//    Mat H;  // Observation matrix, it maps the state domain to the measurement domain 
-//} KalmanState;
 
 Mat P_pred = {0};
 
@@ -232,6 +298,8 @@ void kf_correct(
     Mat *H, // Observation matrix
     Mat *R  // Measurement noise
 ) {
+    assert(Z->r == H->r && R->r == R->c && R->r == H->r && "Wrong arguments dimensions");
+
     // Map state domain to measurements domain
     Mat HX = mat_mul(H, &X);
 
@@ -243,12 +311,10 @@ void kf_correct(
     Mat H_t = mat_trans(H);
     Mat HP = mat_mul(H, &P_pred);
     Mat S = mat_mul(&HP, &H_t);
+
     S = mat_sum(&S, R);
     
-    assert(S.r == 1 && S.c == 1);
-    Mat S_inv = { .r=1, .c=1, {
-        1.0/S.data[0]
-    }};
+    Mat S_inv = mat_inv(&S);
 
     // Compute Kalman gain
     // K = P_pred*H_t*S^-1
@@ -263,14 +329,7 @@ void kf_correct(
     // Update covariance
     // P = (Id - K * H) * P_pred
     Mat KH = mat_mul(&K, H);   // Map Kalman Gain from measurement domain to state domain
-    
-    assert(KH.r==3 && KH.c==3);
-    Mat Id = { .r=3, .c=3, {
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0
-    }};
-    
+    Mat Id = mat_identity(KH.r);
     Mat IdminKH = mat_sub(&Id, &KH);
     P = mat_mul(&IdminKH, &P_pred);
 }
@@ -283,15 +342,13 @@ void control_step(ControllerInterface *intr) {
     bar_l++;
     imu_l++;
     
-    Mat B = { .r=3, .c=1, {
-        0.0,  // pos
-        0.0,  // vel
-        0.0   // acc
-    }};
+    Mat B = {0};
+    B.r = 9;
+    B.c = 1;
     
-    Mat U = { .r=1, .c=1, {
-        0.0
-    }};
+    Mat U = {0};
+    U.r = 1;
+    U.c = 1;
     
     kf_predict(&B, &U);
 
@@ -315,28 +372,42 @@ void control_step(ControllerInterface *intr) {
         Mat R = { .r=1, .c=1, {
             0.25    // m^2
         }};
-        Mat H = { .r=1, .c=3, {
-            // pos, vel, acc
-               1.0, 0.0, 0.0
+        Mat H = { .r=1, .c=9, {
+            // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
+               1.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0
         }};
         kf_correct(&Z, &H, &R);
     }
+
     if (imu_l >= imu_loops) {
         imu_l=0;
 
-        double acc_z = ((double)intr->imu_acc_z / INT16_MAX) * imu_acc_max_value + g;
-        
-#ifdef CONTROL_DEBUG
-        intr->dbg.acc_z_rdng = acc_z;
-#endif
-
-        Mat Z = { .r=1, .c=1, { acc_z } };
-        Mat R = { .r=1, .c=1, {
-            0.00637    // m^2/s
+        Mat Z = { .r=4, .c=1, {
+            ((double)intr->imu_acc_z / INT16_MAX) * imu_acc_max_value + g,  // TODO: this should take account of the orientation
+            ((double)intr->imu_rot_x / INT16_MAX) * imu_rot_max_value,
+            ((double)intr->imu_rot_y / INT16_MAX) * imu_rot_max_value,
+            ((double)intr->imu_rot_z / INT16_MAX) * imu_rot_max_value 
         }};
-        Mat H = { .r=1, .c=3, {
-            // pos, vel, acc 
-               0.0, 0.0, 1.0
+
+#ifdef CONTROL_DEBUG
+        intr->dbg.acc_z_rdng = Z.data[0];
+        intr->dbg.rot_x_rdng = Z.data[1];
+        intr->dbg.rot_y_rdng = Z.data[2];
+        intr->dbg.rot_z_rdng = Z.data[3];
+#endif  
+
+        Mat R = { .r=4, .c=4, {     // Noise covariance matrix
+            0.00637, 0.0,            0.0,            0.0,
+            0.0,     0.05 * DEG2RAD, 0.0,            0.0,
+            0.0,     0.0,            0.05 * DEG2RAD, 0.0,
+            0.0,     0.0,            0.0,            0.05 * DEG2RAD
+        }};
+        Mat H = { .r=4, .c=9, {
+            // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
+               0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,   0.0,
+               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,
+               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0
         }};
         kf_correct(&Z, &H, &R);
     }
@@ -356,6 +427,12 @@ void control_step(ControllerInterface *intr) {
     intr->dbg.pos_z = X.data[0];
     intr->dbg.vel_z = X.data[1];
     intr->dbg.acc_z = X.data[2];
+    intr->dbg.ori_x = X.data[3];
+    intr->dbg.ori_y = X.data[4];
+    intr->dbg.ori_z = X.data[5];
+    intr->dbg.rot_x = X.data[6];
+    intr->dbg.rot_y = X.data[7];
+    intr->dbg.rot_z = X.data[8];
     intr->dbg.pid_out_vel = tgt_vel;
 #endif
 }

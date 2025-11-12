@@ -10,10 +10,19 @@ typedef struct {
     double pos_z; // m
     double vel_z; // m/s
     double acc_z; // m/s^2
+    double ori_x; // rad
+    double ori_y; // rad
+    double ori_z; // rad
+    double rot_x; // rad/s
+    double rot_y; // rad/s
+    double rot_z; // rad/s
 
     // Sensor readings
     double alt_m_rdng; // m
     double acc_z_rdng; // m/s^2
+    double rot_x_rdng; // rot/s
+    double rot_y_rdng; // rot/s
+    double rot_z_rdng; // rot/s
 
     // PIDs
     double pid_out_vel;

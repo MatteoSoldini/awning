@@ -124,6 +124,29 @@ p_vec3 p_vec_rotate_quat(p_vec3 *v, p_quat *q) {
     return result;
 }
 
+p_vec3 p_quat_to_euler(p_quat *q) {
+    // source: https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
+
+    p_vec3 angles = {0};
+
+    // roll (x-axis rotation)
+    double sinr_cosp = 2 * (q->r * q->i + q->j * q->k);
+    double cosr_cosp = 1 - 2 * (q->i * q->i + q->j * q->j);
+    angles.x = atan2(sinr_cosp, cosr_cosp);
+
+    // pitch (y-axis rotation)
+    double sinp = sqrt(1 + 2 * (q->r * q->j - q->i * q->k));
+    double cosp = sqrt(1 - 2 * (q->r * q->j - q->i * q->k));
+    angles.y = 2 * atan2(sinp, cosp) - M_PI / 2;
+
+    // yaw (z-axis rotation)
+    double siny_cosp = 2 * (q->r * q->k + q->i * q->j);
+    double cosy_cosp = 1 - 2 * (q->j * q->j + q->k * q->k);
+    angles.z = atan2(siny_cosp, cosy_cosp);
+
+    return angles;
+}
+
 p_vec3 p_vec_sum(p_vec3 *v1, p_vec3 *v2) {
     return (p_vec3) {
         .x = v1->x + v2->x,
@@ -225,7 +248,7 @@ p_rigid_body obj = {
     .pos = { 0.0, 0.0, 0.5},
     .vel = { 0.0, 0.0, 0.0},
     .acc = { 0.0, 0.0, 0.0},
-    .ori = { 1.0, 0.01, 0.0, 0.0},   // (this should be normalized to 1)
+    .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
     .rot = { 0.0, 0.0, 0.0},
     .mass = 2.0,
     .inertia = { 0.2, 0.2, 0.4 }
@@ -421,13 +444,12 @@ const size_t s_bit_mask = (1 << s_read_bits) - 1;
 // TODO: add bias
 const double imu_upt_fq = 200.0;
 const uint64_t imu_udt_mc = 1.0/imu_upt_fq * 1e6;
-const size_t imu_read_bits = 15;
-const size_t imu_bit_mask = (1 << imu_read_bits) - 1;
+const size_t imu_read_bits = 16;
 
 const double imu_acc_sdev = 0.00637;
 const double imu_acc_max_value = 8.0*g;     // m/s^2  TO CHECK
 
-const double imu_acc_sdev = 0.05 * DEG2RAD; // rad/s
+const double imu_rot_sdev = 0.05 * DEG2RAD; // rad/s
 const double imu_rot_max_value = 250.0;     // rad/s  TO CHECK
 
 // Physics parameters
@@ -437,6 +459,19 @@ double p_real_fq = 0.0;
 
 // Controller
 const uint64_t c_udt_mc = 1.0/CONTROL_FQ * 1e6;
+
+int64_t simulate_sensor(double real, double max, double min, double sdev, size_t n_bits) {
+    double sigma = sdev * rand_gauss();
+    size_t sat_value = (1 << n_bits) - 1;
+
+    real += sigma;
+
+    if (real > max) real = max;
+    if (real < min) real = min;
+
+    double norm = real / (max - min);
+    return norm * sat_value;
+}
 
 void* p_update() {
     uint64_t now_mc = get_micros();
@@ -472,8 +507,12 @@ void* p_update() {
             ctr_intr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
             
             //printf("%lf\n", ctr_intr.dbg.acc_z);
-            cb_push(&val1_cb, obj.acc.z);
-            cb_push(&val2_cb, ctr_intr.dbg.acc_z_rdng);
+
+            p_vec3 obj_angles = p_quat_to_euler(&obj.ori);
+            cb_push(&val1_cb, obj_angles.x);
+            cb_push(&val2_cb, ctr_intr.dbg.ori_x);
+
+            printf("real: %lf, pred: %lf\n", obj.rot.x, ctr_intr.dbg.rot_x);
             //cb_push(&val2_cb, );
         }
         
@@ -481,7 +520,7 @@ void* p_update() {
         if (now_mc - last_imu_mc >= imu_udt_mc) {
             last_imu_mc += imu_udt_mc;
             
-            // Real accelerometer read acceleration + gravity
+            // Real accelerometer: body acceleration + gravity
             p_vec3 imu_w_acc = obj.acc;
             imu_w_acc.z -= g;
 
@@ -489,13 +528,14 @@ void* p_update() {
             p_quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
             p_vec3 imu_b_acc = p_vec_rotate_quat(&imu_w_acc, &q_inv);
 
-            p_vec3 imu_noise = { rand_gauss(), rand_gauss(), rand_gauss() };
-            imu_noise = p_vec_scale(&imu_noise, imu_acc_sdev);
-            p_vec3 imu_acc_reading = p_vec_sum(&imu_b_acc, &imu_noise);
-            
-            ctr_intr.imu_acc_x = (int16_t)((imu_acc_reading.x / imu_acc_max_value) * imu_bit_mask);
-            ctr_intr.imu_acc_y = (imu_acc_reading.y / imu_acc_max_value) * imu_bit_mask;
-            ctr_intr.imu_acc_z = (int16_t)((imu_acc_reading.z / imu_acc_max_value) * imu_bit_mask);
+            ctr_intr.imu_acc_x = simulate_sensor(imu_b_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+            ctr_intr.imu_acc_y = simulate_sensor(imu_b_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+            ctr_intr.imu_acc_z = simulate_sensor(imu_b_acc.z, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+
+            // Gyro
+            ctr_intr.imu_rot_x = simulate_sensor(obj.rot.x, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
+            ctr_intr.imu_rot_y = simulate_sensor(obj.rot.y, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
+            ctr_intr.imu_rot_z = simulate_sensor(obj.rot.z, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
         }
 
         // Controller step
@@ -605,6 +645,12 @@ int main(void) {
             if (c_pitch_rad < -PI/2.0f + 0.1f) c_pitch_rad = -PI/2.0f + 0.1f;
         }
 
+        //if (IsKeyDown(KEY_W)) {
+        //    obj.rot.x = 1.0;
+        //} else {
+        //    obj.rot.x = 0.0;
+        //}
+
         c_radius -= GetMouseWheelMove() * CAM_SCROLL_SPEED;
         if (c_radius < CAM_MIN_RADIUS) c_radius = CAM_MIN_RADIUS;
         
@@ -656,45 +702,65 @@ int main(void) {
             EndMode3D();
         EndTextureMode();
         
+        size_t cur_y = 0;
         BeginDrawing();
             ClearBackground((Color){ 30, 30, 30, 255 });
 
             // Draw control panel
-            DrawRectangle(0, 0, panel_size, win_h, Fade(LIGHTGRAY, 0.3f));
-            DrawRectangleLines(0, 0, panel_size, win_h, Fade(LIGHTGRAY, 0.7f));
+            DrawRectangle(0, cur_y, panel_size, win_h, Fade(LIGHTGRAY, 0.3f));
+            DrawRectangleLines(0, cur_y, panel_size, win_h, Fade(LIGHTGRAY, 0.7f));
 
             int fps = GetFPS();
             char fps_txt[64];
             sprintf(fps_txt, "FPS: %i", fps);
-            DrawText(fps_txt, 10, 10, text_size, WHITE);
+
+            cur_y += 10;
+            DrawText(fps_txt, 10, cur_y, text_size, WHITE);
             
+            cur_y += text_size;
             char p_fq_txt[64];
             sprintf(p_fq_txt, "rPhy: %5.0lf Hz", p_real_fq);
-            DrawText(p_fq_txt, 10, 10 + text_size, text_size, WHITE);
+            DrawText(p_fq_txt, 10, cur_y, text_size, WHITE);
             
+            cur_y += text_size;
             DrawLineEx(
-                (Vector2){0, 10 + 2*text_size},
+                (Vector2){0, cur_y},
                 (Vector2){panel_size, 10 + 2*text_size},
                 2.0,
                 (Color){150, 150, 150, 255}
             );
 
+            cur_y += 10;
             char pos_txt[64];
-            sprintf(pos_txt, "X: %10.2lfm", obj.pos.x);
-            DrawText(pos_txt, 10, 2*10 + 2*text_size, text_size, WHITE);
-            sprintf(pos_txt, "Y: %10.2lfm", obj.pos.y);
-            DrawText(pos_txt, 10, 2*10 + 3*text_size, text_size, WHITE);
-            sprintf(pos_txt, "Z: %10.2lfm", obj.pos.z);
-            DrawText(pos_txt, 10, 2*10 + 4*text_size, text_size, WHITE);
             
+            cur_y += text_size;
+            sprintf(pos_txt, "X: %10.2lfm", obj.pos.x);
+            DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            
+            cur_y += text_size;
+            sprintf(pos_txt, "Y: %10.2lfm", obj.pos.y);
+            DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            
+            cur_y += text_size;
+            sprintf(pos_txt, "Z: %10.2lfm", obj.pos.z);
+            DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            
+            cur_y += text_size;
             DrawLineEx(
-                (Vector2){0, 2*10 + 5*text_size},
-                (Vector2){panel_size, 2*10 + 5*text_size},
+                (Vector2){0, cur_y},
+                (Vector2){panel_size, cur_y},
                 2.0,
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, 2*10 + 5*text_size, panel_size, graph_height, &val1_cb, &val2_cb, 5.0, -5.0);
+            DrawGraph(0, cur_y, panel_size, graph_height, &val1_cb, &val2_cb, 2.0, -2.0);
+
+            cur_y += graph_height;
+            if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=panel_size, .height=text_size  }, "Perturbe")) {
+                obj.rot.x += .2;
+                obj.rot.y += .1;
+                obj.rot.z += .5;
+            }
 
             DrawTextureRec(
                 target.texture,
