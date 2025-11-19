@@ -509,8 +509,8 @@ void* p_update() {
             //printf("%lf\n", ctr_intr.dbg.acc_z);
 
             p_vec3 obj_angles = p_quat_to_euler(&obj.ori);
-            cb_push(&val1_cb, obj_angles.x);
-            cb_push(&val2_cb, ctr_intr.dbg.ori_x);
+            cb_push(&val1_cb, obj.rot.y);
+            cb_push(&val2_cb, ctr_intr.dbg.rot_y);
 
             printf("real: %lf, pred: %lf\n", obj.rot.x, ctr_intr.dbg.rot_x);
             //cb_push(&val2_cb, );
@@ -757,9 +757,9 @@ int main(void) {
 
             cur_y += graph_height;
             if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=panel_size, .height=text_size  }, "Perturbe")) {
-                obj.rot.x += .2;
-                obj.rot.y += .1;
-                obj.rot.z += .5;
+                obj.rot.x += 0.0;
+                obj.rot.y += 0.2;
+                obj.rot.z += 0.0;
             }
 
             DrawTextureRec(

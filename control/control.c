@@ -72,7 +72,7 @@ PIDParams mot_pid_p = {
 };
 PIDState mot_pid_s = {0};
 
-PIDParams vel_pid_p = {
+PIDParams alt_pid_p = {
     .p = 2.0,
     .i = 0.0,
     .d = 0.0,
@@ -80,7 +80,29 @@ PIDParams vel_pid_p = {
     .high = 1.0,
     .low = -1.0
 };
-PIDState vel_pid_s = {0};
+PIDState alt_pid_s = {0};
+
+PIDParams ori_pid_p = {
+    .p = 1.0,
+    .i = 0.0,
+    .d = 0.0,
+    .dt = c_dt,
+    .high = 0.1,
+    .low = -0.1
+};
+PIDState ori_x_pid_s = {0};
+PIDState ori_y_pid_s = {0};
+
+PIDParams rot_pid_p = {
+    .p = 1.0,
+    .i = 0.0,
+    .d = 0.0,
+    .dt = c_dt,
+    .high = 0.1,
+    .low = -0.1
+};
+PIDState rot_x_pid_s = {0};
+PIDState rot_y_pid_s = {0};
 
 #define MAT_SIZE 128
 typedef struct {
@@ -413,15 +435,24 @@ void control_step(ControllerInterface *intr) {
     }
 
     // Velocity PID
-    double tgt_vel = pid_step(X.data[0], 10.0, &vel_pid_p, &vel_pid_s);
+    double tgt_vel = pid_step(X.data[0], 10.0, &alt_pid_p, &alt_pid_s);
     
     // Motor PID
     const double hover_cmd = 0.3;
     double out_cmd = hover_cmd + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
 
-    for (size_t i=0; i<4; i++) {
-        intr->rot_cmd[i] = out_cmd;
-    }
+    double rot_x_tgt = pid_step(X.data[3], 0.0, &ori_pid_p, &ori_x_pid_s);
+    double out_x_cmd = pid_step(X.data[6], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
+    
+    double rot_y_tgt = pid_step(X.data[4], 0.0, &ori_pid_p, &ori_y_pid_s);
+    double out_y_cmd = pid_step(X.data[7], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
+    
+    // Motor mixer
+    // fl > fr > rr > rl
+    intr->rot_cmd[0] = out_cmd - out_x_cmd - out_y_cmd;
+    intr->rot_cmd[1] = out_cmd + out_x_cmd - out_y_cmd;
+    intr->rot_cmd[2] = out_cmd + out_x_cmd + out_y_cmd;
+    intr->rot_cmd[3] = out_cmd - out_x_cmd + out_y_cmd;
 
 #ifdef CONTROL_DEBUG
     intr->dbg.pos_z = X.data[0];
