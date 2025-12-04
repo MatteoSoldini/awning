@@ -3,57 +3,66 @@
 #include <stdio.h>
 #include <math.h>
 #include <assert.h>
+#include <stdlib.h>
 
 #define PI 3.14159265358979323846
 #define DEG2RAD (PI/180.0f)
 
-const double c_dt = 1.0 / CONTROL_FQ;
+const f64 c_dt = 1.0 / CONTROL_FQ;
 
 // Quadcopter physics
-static const double kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
-static const double mass = 2.0; // Kg
-static const double g = 9.81;
+static const f64 kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
+static const f64 mass = 2.0; // Kg
+static const f64 g = 9.81;
 
 // Barometer sensor
-const double bar_fq = 50.0;  // Make sure it's divisible by CONTROL_FQ
-const size_t bar_loops = CONTROL_FQ / bar_fq;
-const double bar_dt = 1.0 / bar_fq;
+const f64 bar_fq = 50.0;  // Make sure it's divisible by CONTROL_FQ
+const u64 bar_loops = CONTROL_FQ / bar_fq;
+const f64 bar_dt = 1.0 / bar_fq;
 
 // IMU sensor
-const double imu_fq = 200.0; // Make sure it's divisible by CONTROL_FQ
-const size_t imu_loops = CONTROL_FQ / imu_fq;
-const double imu_dt = 1.0 / imu_fq;
-static const double imu_acc_max_value = 8.0*g; // m/s^2
-static const double imu_rot_max_value = 250.0; // rad/s
+const f64 imu_fq = 200.0; // Make sure it's divisible by CONTROL_FQ
+const u64 imu_loops = CONTROL_FQ / imu_fq;
+const f64 imu_dt = 1.0 / imu_fq;
+
+static const f64 imu_acc_max_value = 8.0*g; // m/s^2
+f64 imu_acc_to_ms2(i16 raw_acc) {
+    return ((f64)raw_acc / (f64)INT16_MAX) * imu_acc_max_value; 
+}
+
+static const f64 imu_rot_max_value = 250.0; // rad/s
+f64 imu_gyro_to_rad(i16 raw_gyro) {
+    return ((f64)raw_gyro / (f64)INT16_MAX) * imu_rot_max_value; 
+}
 
 // This should only be touched by the pid function
 typedef struct {
-    double i_err;
-    double p_real;
+    f64 i_err;
+    f64 p_real;
 } PIDState;
 
 // For the moment let's assume this parameters constant
 typedef struct {
-    const double dt;
-    const double p;
-    const double i;
-    const double d;
-    const double low;
-    const double high;
+    const f64 dt;
+    const f64 p;
+    const f64 i;
+    const f64 d;
+    const f64 low;
+    const f64 high;
 } PIDParams;
 
-double pid_step(
-    double real,
-    double tgt,
+f64 pid_step(
+    f64 real,
+    f64 tgt,
     PIDParams *pid_params,
     PIDState *pid_state
 ) {
-    double err = tgt - real;
+    f64 err = tgt - real;
     pid_state->i_err += err * pid_params->dt;
-    double der = (real - pid_state->p_real) / pid_params->dt;
+    f64 der = (real - pid_state->p_real) / pid_params->dt;
     pid_state->p_real = real;
 
-    double out = pid_params->p*err + pid_params->i*pid_state->i_err + pid_params->d*der;
+    f64 out = pid_params->p*err + pid_params->i*pid_state->i_err + pid_params->d*der;
 
     if (out > pid_params->high) out = pid_params->high;
     if (out < pid_params->low) out = pid_params->low;
@@ -104,11 +113,11 @@ PIDParams rot_pid_p = {
 PIDState rot_x_pid_s = {0};
 PIDState rot_y_pid_s = {0};
 
-#define MAT_SIZE 128
+#define MAT_SIZE 256
 typedef struct {
-    size_t r;
-    size_t c;
-    double data[MAT_SIZE];
+    u64 r;
+    u64 c;
+    f64 data[MAT_SIZE];
 } Mat;
 
 // * https://kalmanfilter.net/
@@ -124,10 +133,10 @@ Mat mat_mul(Mat *A, Mat *B) {
     assert(A->c == B->r && "Dimension mismatch");
 
     Mat C = {.r=A->r, .c=B->c};
-    for (size_t i=0; i<A->r; i++) {
-        for (size_t j=0; j<B->c; j++) {
-            double sum = 0.0;
-            for (size_t k=0; k<A->c; k++) {
+    for (u64 i=0; i<A->r; i++) {
+        for (u64 j=0; j<B->c; j++) {
+            f64 sum = 0.0;
+            for (u64 k=0; k<A->c; k++) {
                 sum += A->data[i*A->c + k] * B->data[k*B->c + j];
             }
             C.data[i*C.c + j] = sum;
@@ -140,7 +149,7 @@ Mat mat_sum(Mat *A, Mat *B) {
     assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
     
     Mat C = {.r=A->r, .c=A->c};
-    for (size_t i=0; i<A->r*A->c; i++) {
+    for (u64 i=0; i<A->r*A->c; i++) {
         C.data[i] = A->data[i] + B->data[i];
     }
 
@@ -151,7 +160,7 @@ Mat mat_sub(Mat *A, Mat *B) {
     assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
     
     Mat C = {.r=A->r, .c=A->c};
-    for (size_t i=0; i<A->r*A->c; i++) {
+    for (u64 i=0; i<A->r*A->c; i++) {
         C.data[i] = A->data[i] - B->data[i];
     }
 
@@ -160,8 +169,8 @@ Mat mat_sub(Mat *A, Mat *B) {
 
 Mat mat_trans(Mat *M) {
     Mat N = { .r=M->c, .c=M->r };
-    for (size_t r=0; r<N.r; r++) {
-        for (size_t c=0; c<N.c; c++) {
+    for (u64 r=0; r<N.r; r++) {
+        for (u64 c=0; c<N.c; c++) {
             N.data[r*N.c + c] = M->data[c*N.r + r];
         }
     }
@@ -169,15 +178,27 @@ Mat mat_trans(Mat *M) {
     return N;
 }
 
-Mat mat_identity(size_t size) {
+Mat mat_identity(u64 size) {
     Mat I = {0};
     I.r = size;
     I.c = size;
-    for (size_t i=0; i<size; i++) {
+    for (u64 i=0; i<size; i++) {
         I.data[size*i + i] = 1.0;
     }
 
     return I;
+}
+
+void mat_print(Mat *M) {
+    printf("[\n");
+    for (u64 r=0; r<M->r; r++) {
+        printf("\t");
+        for (u64 c=0; c<M->c; c++) {
+            printf("%5.3lf, ", M->data[r*M->c + c]);
+        }
+        printf("\n");
+    }
+    printf("]\n");
 }
 
 Mat mat_inv(Mat *M) {
@@ -186,53 +207,74 @@ Mat mat_inv(Mat *M) {
     // If we multiply a matrix by an inversed matrix we achieve the same results a division.
 
     // We're going to use Gauss-Jordan elimination here
-    // source: https://en.wikipedia.org/wiki/Gaussian_elimination
+    // https://en.wikipedia.org/wiki/Gaussian_elimination
+    // Numerical Recipes in C, Chapter 2.1 "Gauss-Jordan Elimination"
 
     // Row operations:
     // * Swapping two rows,
     // * Multiplying a row by a nonzero number,
     // * Adding a multiple of one row to another row.
 
-    assert(M->c == M->r);
+    assert(M->c == M->r && "The matrix must be squared");
 
-    size_t size = M->c;
+    u64 size = M->c;
 
-    // To simplify things for the moment let's assume that elements resides only on the diagonal
-    for (size_t r=0; r<M->r; r++) {
-        for (size_t c=0; c<M->c; c++) {
-            if (r==c) continue;
-            assert(M->data[r*M->c + c] == 0.0 && "Matrix has elements outside the diagonal");
+    //// To simplify things for the moment let's assume that elements resides only on the diagonal
+    //for (u64 r=0; r<M->r; r++) {
+    //    for (u64 c=0; c<M->c; c++) {
+    //        if (r==c) continue;
+    //        
+    //        if (M->data[r*M->c + c] != 0.0) {
+    //            printf("ERROR: Matrix has elements outside the diagonal\n");
+    //            printf("Found at (%u, %u): %lf\n", r, c, M->data[r*M->c + c]);
+    //            mat_print(M);
+    //            exit(1);
+    //        }
+    //    }
+    //}
+    
+    //mat_print(M);
+
+    // Build the augmented matrix
+    // aug: [M | I]
+    Mat aug = {0};
+    aug.r = size;
+    aug.c = 2*size;
+
+    for (u64 r=0; r<size; r++) {
+        for (u64 c=0; c<size; c++) {
+            aug.data[r*aug.c + c] = M->data[r*M->c + c];
         }
     }
 
-    Mat M_inv = *M;
-    for (size_t i=0; i<size; i++) {
-        M_inv.data[i*size + i] = 1.0 / M_inv.data[i*size + i];
+    for (u64 i=0; i<size; i++) {
+        aug.data[i*aug.c + size + i] = 1.0;
     }
+
+    mat_print(&aug);
+
+    //Mat aug = { .r=size, .c=2*size, {0} };
+
+    //Mat M_inv = *M;
+    //for (u64 i=0; i<size; i++) {
+    //    M_inv.data[i*size + i] = 1.0 / M_inv.data[i*size + i];
+    //}
 
     // Test code
     //Mat I_test = mat_mul(M, &M_inv);
     //Mat I_known = mat_identity(size);
 
-    //for (size_t r=0; r<M->r; r++) {
-    //    for (size_t c=0; c<M->c; c++) {
+    //for (u64 r=0; r<M->r; r++) {
+    //    for (u64 c=0; c<M->c; c++) {
     //        assert(I_test.data[r*I_test.r + c] == I_known.data[r*I_known.r + c]);
     //    }
     //}
 
-    return M_inv;
+    exit(0);
+
+    //return M_inv;
 }
 
-void mat_print(Mat *M) {
-    printf("[\n");
-    for (size_t r=0; r<M->r; r++) {
-        for (size_t c=0; c<M->c; c++) {
-            printf("%5.2lf, ", M->data[r*M->c + c]);
-        }
-        printf("\n");
-    }
-    printf("]\n");
-}
 
 // TODO: There should be a smartest/cleaner way to populate these matrices.
 // Like a enum for indexing
@@ -358,8 +400,8 @@ void kf_correct(
 
 // Assume that the control_step() function is triggered by an interrupt
 // in the MCU every 1ms (1000Hz)
-size_t bar_l = 0;
-size_t imu_l = 0;
+u64 bar_l = 0;
+u64 imu_l = 0;
 void control_step(ControllerInterface *intr) {
     bar_l++;
     imu_l++;
@@ -379,12 +421,12 @@ void control_step(ControllerInterface *intr) {
         bar_l=0;
 
         // Convert Pa to m
-        const double p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
-        const double t0 = 15.04;  // Celsius    Temperature at sea-level
-        const double inv_e = 1.0/5.2561;
+        const f64 p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
+        const f64 t0 = 15.04;  // Celsius    Temperature at sea-level
+        const f64 inv_e = 1.0/5.2561;
     
-        double t = 288.08 * pow((double)intr->pressure / p0, inv_e) - 273.1;
-        double alt_m = (t0 - t) / 0.00649;
+        f64 t = 288.08 * pow((double)intr->pressure / p0, inv_e) - 273.1;
+        f64 alt_m = (t0 - t) / 0.00649;
 
 #ifdef CONTROL_DEBUG
         intr->dbg.alt_m_rdng = alt_m;
@@ -404,29 +446,96 @@ void control_step(ControllerInterface *intr) {
     if (imu_l >= imu_loops) {
         imu_l=0;
 
-        Mat Z = { .r=4, .c=1, {
-            ((double)intr->imu_acc_z / INT16_MAX) * imu_acc_max_value + g,  // TODO: this should take account of the orientation
-            ((double)intr->imu_rot_x / INT16_MAX) * imu_rot_max_value,
-            ((double)intr->imu_rot_y / INT16_MAX) * imu_rot_max_value,
-            ((double)intr->imu_rot_z / INT16_MAX) * imu_rot_max_value 
+        // Body-frame accelerations
+        f64 ax = imu_acc_to_ms2(intr->imu_acc_x); 
+        f64 ay = imu_acc_to_ms2(intr->imu_acc_y); 
+        f64 az = imu_acc_to_ms2(intr->imu_acc_z);
+
+        // This assumes an ideal hover state. I wonder if there are
+        // ways to subtract the effect of the known acceleration from this (Is 
+        // this even stable?)
+        f64 acc_ori_y = atan2(ax, -az);
+        f64 acc_ori_x = atan2(ay, -az);
+
+        //printf("acc_ori_x=%lf, acc_ori_y=%lf\n", acc_ori_x, acc_ori_y);
+        //printf("acc_x=%lf, acc_y=%lf, acc_z=%lf\n", ax, ay, az);
+
+        // World-frame accelerations
+        // https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
+        // https://en.wikipedia.org/wiki/Rotation_matrix#Basic_3D_rotations
+        
+        f64 alpha = X.data[3];
+        f64 beta  = X.data[4];
+        f64 gamma = X.data[5];
+        
+        Mat rot_mat_x = { .r=3, .c=3, {
+            1.0, 0.0,        0.0,
+            0.0, cos(alpha), -sin(alpha),
+            0.0, sin(alpha), cos(alpha)
+        }};
+        
+        Mat rot_mat_y = { .r=3, .c=3, {
+            cos(beta),  0.0, sin(beta),
+            0.0,        1.0, 0.0,
+            -sin(beta), 0.0, cos(beta)
+        }};
+        
+        Mat rot_mat_z = { .r=3, .c=3, {
+            cos(gamma), -sin(gamma), 0.0,
+            sin(gamma), cos(gamma),  0.0,
+            0.0,        0.0,         1.0 
         }};
 
-#ifdef CONTROL_DEBUG
-        intr->dbg.acc_z_rdng = Z.data[0];
-        intr->dbg.rot_x_rdng = Z.data[1];
-        intr->dbg.rot_y_rdng = Z.data[2];
-        intr->dbg.rot_z_rdng = Z.data[3];
-#endif  
-
-        Mat R = { .r=4, .c=4, {     // Noise covariance matrix
-            0.00637, 0.0,            0.0,            0.0,
-            0.0,     0.05 * DEG2RAD, 0.0,            0.0,
-            0.0,     0.0,            0.05 * DEG2RAD, 0.0,
-            0.0,     0.0,            0.0,            0.05 * DEG2RAD
+        Mat rot_mat_zy = mat_mul(&rot_mat_z, &rot_mat_y);
+        Mat rot_mat    = mat_mul(&rot_mat_zy, &rot_mat_x);
+        
+        Mat imu_body_acc = { .r=3, .c=1, {
+            ax,
+            ay,
+            az
         }};
-        Mat H = { .r=4, .c=9, {
+
+        Mat imu_world_acc = mat_mul(&rot_mat, &imu_body_acc);
+        imu_world_acc.data[2] += g;
+
+        f64 gx = imu_gyro_to_rad(intr->imu_rot_x); 
+        f64 gy = imu_gyro_to_rad(intr->imu_rot_y); 
+        f64 gz = imu_gyro_to_rad(intr->imu_rot_z); 
+
+        Mat Z = { .r=9, .c=1, {
+            imu_world_acc.data[0], // acc_x
+            imu_world_acc.data[1], // acc_y
+            imu_world_acc.data[2], // acc_z
+            acc_ori_x,             // ori_x
+            acc_ori_y,             // ori_y
+            0.0,                   // ori_z
+            gx,                    // rot_x
+            gy,                    // rot_y
+            gz                     // rot_z
+        }};
+
+        Mat R = {0};
+        R.r = Z.r;
+        R.c = Z.r;
+
+        R.data[0] =         0.00637;
+        R.data[1 + 1*R.c] = 0.00637;
+        R.data[2 + 2*R.c] = 0.00637;
+        R.data[3 + 3*R.c] = 1e-1;
+        R.data[4 + 4*R.c] = 1e-1;
+        R.data[5 + 5*R.c] = 0.0;
+        R.data[6 + 6*R.c] = 0.05 * DEG2RAD;
+        R.data[7 + 7*R.c] = 0.05 * DEG2RAD;
+        R.data[8 + 8*R.c] = 0.05 * DEG2RAD;
+        
+        Mat H = { .r=9, .c=9, {
             // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
+               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
                0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+               0.0,   0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+               0.0,   0.0,   0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,
+               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0
@@ -435,17 +544,17 @@ void control_step(ControllerInterface *intr) {
     }
 
     // Velocity PID
-    double tgt_vel = pid_step(X.data[0], 10.0, &alt_pid_p, &alt_pid_s);
+    f64 tgt_vel = pid_step(X.data[0], 10.0, &alt_pid_p, &alt_pid_s);
     
     // Motor PID
-    const double hover_cmd = 0.3;
-    double out_cmd = hover_cmd + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
+    const f64 hover_cmd = 0.3;
+    f64 out_cmd = hover_cmd + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
 
-    double rot_x_tgt = pid_step(X.data[3], 0.0, &ori_pid_p, &ori_x_pid_s);
-    double out_x_cmd = pid_step(X.data[6], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
+    f64 rot_x_tgt = pid_step(X.data[3], 0.0, &ori_pid_p, &ori_x_pid_s);
+    f64 out_x_cmd = pid_step(X.data[6], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
     
-    double rot_y_tgt = pid_step(X.data[4], 0.0, &ori_pid_p, &ori_y_pid_s);
-    double out_y_cmd = pid_step(X.data[7], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
+    f64 rot_y_tgt = pid_step(X.data[4], 0.0, &ori_pid_p, &ori_y_pid_s);
+    f64 out_y_cmd = pid_step(X.data[7], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
     
     // Motor mixer
     // fl > fr > rr > rl
