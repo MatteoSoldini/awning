@@ -96,8 +96,8 @@ PIDParams ori_pid_p = {
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
-    .high = 0.1,
-    .low = -0.1
+    .high = 0.2,
+    .low = -0.2
 };
 PIDState ori_x_pid_s = {0};
 PIDState ori_y_pid_s = {0};
@@ -119,6 +119,8 @@ typedef struct {
     u64 c;
     f64 data[MAT_SIZE];
 } Mat;
+
+#define MAT_AT(M, row, col) ((M).data[(row) * (M).c + (col)])
 
 // * https://kalmanfilter.net/
 
@@ -206,7 +208,7 @@ Mat mat_inv(Mat *M) {
     // There's no concept of matrix division.
     // If we multiply a matrix by an inversed matrix we achieve the same results a division.
 
-    // We're going to use Gauss-Jordan elimination here
+    // We're going to use Gauss-Jordan elimination with no pivoting here
     // https://en.wikipedia.org/wiki/Gaussian_elimination
     // Numerical Recipes in C, Chapter 2.1 "Gauss-Jordan Elimination"
 
@@ -218,22 +220,6 @@ Mat mat_inv(Mat *M) {
     assert(M->c == M->r && "The matrix must be squared");
 
     u64 size = M->c;
-
-    //// To simplify things for the moment let's assume that elements resides only on the diagonal
-    //for (u64 r=0; r<M->r; r++) {
-    //    for (u64 c=0; c<M->c; c++) {
-    //        if (r==c) continue;
-    //        
-    //        if (M->data[r*M->c + c] != 0.0) {
-    //            printf("ERROR: Matrix has elements outside the diagonal\n");
-    //            printf("Found at (%u, %u): %lf\n", r, c, M->data[r*M->c + c]);
-    //            mat_print(M);
-    //            exit(1);
-    //        }
-    //    }
-    //}
-    
-    //mat_print(M);
 
     // Build the augmented matrix
     // aug: [M | I]
@@ -248,17 +234,48 @@ Mat mat_inv(Mat *M) {
     }
 
     for (u64 i=0; i<size; i++) {
-        aug.data[i*aug.c + size + i] = 1.0;
+        MAT_AT(aug, i, size+i) = 1.0;
+    }
+    
+    //mat_print(&aug);
+
+    for (u64 r=0; r<aug.r; r++) {
+        // Normalize rows
+        f64 pivot = MAT_AT(aug, r, r);
+        assert(pivot != 0.0);
+
+        for (u64 c=r; c<aug.c; c++) {
+            MAT_AT(aug, r, c) /= pivot;
+        }
+
+        // Eliminate this column from other rows
+        for (u64 rr=0; rr<size; rr++) {
+            if (rr == r) continue;
+
+            f64 factor = MAT_AT(aug, rr, r); // what to subtract
+            if (factor == 0.0) continue;
+
+            for (u64 c=0; c<aug.c; c++) {
+                MAT_AT(aug, rr, c) -= factor * MAT_AT(aug, r, c);
+            }
+        }
+
+        // Then the right amount of the row is subtracted from each other
+        // row to make all the remaining right element zero
+        
+        //mat_print(&aug);
     }
 
-    mat_print(&aug);
+    Mat M_inv = {0};
+    M_inv.r = size;
+    M_inv.c = size;
 
-    //Mat aug = { .r=size, .c=2*size, {0} };
-
-    //Mat M_inv = *M;
-    //for (u64 i=0; i<size; i++) {
-    //    M_inv.data[i*size + i] = 1.0 / M_inv.data[i*size + i];
-    //}
+    // Copy left augmented size back
+    for (u64 r=0; r<size; r++) {
+        for (u64 c=0; c<size; c++) {
+            MAT_AT(M_inv, r, c) = MAT_AT(aug, r, c+size);
+        }
+    }
 
     // Test code
     //Mat I_test = mat_mul(M, &M_inv);
@@ -270,9 +287,7 @@ Mat mat_inv(Mat *M) {
     //    }
     //}
 
-    exit(0);
-
-    //return M_inv;
+    return M_inv;
 }
 
 
@@ -454,8 +469,8 @@ void control_step(ControllerInterface *intr) {
         // This assumes an ideal hover state. I wonder if there are
         // ways to subtract the effect of the known acceleration from this (Is 
         // this even stable?)
-        f64 acc_ori_y = atan2(ax, -az);
-        f64 acc_ori_x = atan2(ay, -az);
+        f64 acc_ori_x = -atan2(ay, -az);
+        f64 acc_ori_y =  atan2(ax, -az);
 
         //printf("acc_ori_x=%lf, acc_ori_y=%lf\n", acc_ori_x, acc_ori_y);
         //printf("acc_x=%lf, acc_y=%lf, acc_z=%lf\n", ax, ay, az);
@@ -502,13 +517,12 @@ void control_step(ControllerInterface *intr) {
         f64 gy = imu_gyro_to_rad(intr->imu_rot_y); 
         f64 gz = imu_gyro_to_rad(intr->imu_rot_z); 
 
-        Mat Z = { .r=9, .c=1, {
+        Mat Z = { .r=8, .c=1, {
             imu_world_acc.data[0], // acc_x
             imu_world_acc.data[1], // acc_y
             imu_world_acc.data[2], // acc_z
             acc_ori_x,             // ori_x
             acc_ori_y,             // ori_y
-            0.0,                   // ori_z
             gx,                    // rot_x
             gy,                    // rot_y
             gz                     // rot_z
@@ -523,19 +537,17 @@ void control_step(ControllerInterface *intr) {
         R.data[2 + 2*R.c] = 0.00637;
         R.data[3 + 3*R.c] = 1e-1;
         R.data[4 + 4*R.c] = 1e-1;
-        R.data[5 + 5*R.c] = 0.0;
+        R.data[5 + 5*R.c] = 0.05 * DEG2RAD;
         R.data[6 + 6*R.c] = 0.05 * DEG2RAD;
         R.data[7 + 7*R.c] = 0.05 * DEG2RAD;
-        R.data[8 + 8*R.c] = 0.05 * DEG2RAD;
         
-        Mat H = { .r=9, .c=9, {
+        Mat H = { .r=Z.r, .c=X.r, {
             // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
                0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
                0.0,   0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,
-               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,
                0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0

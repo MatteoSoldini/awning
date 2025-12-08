@@ -333,6 +333,10 @@ void p_step() {
         mot_f[i].z = kf * rot_w[i] * rot_w[i];
     }
 
+    //for (u64 i=0; i<4; i++) {
+    //    //printf("M0: %lf, M1: %lf, M2: %lf, M3: %lf\n", mot_f[0].z, mot_f[1].z, mot_f[2].z, mot_f[3].z);
+    //}
+
     p_vec3 tot_mot_f = { 0.0, 0.0, 0.0 };
     for (size_t i=0; i<4; i++) {
         tot_mot_f = p_vec_sum(&tot_mot_f, &mot_f[i]);
@@ -351,12 +355,12 @@ void p_step() {
     // Aerodynamic drag
     // F = -1/2 * air_rho * Cd * A * rel_vel^2
     // rho -> Air density (Kg/m^3)
-    // Cd -> Drag coefficient
+    // Cd -> (Uniform) drag coefficient
     // A -> Cross-section area (m^2)
     const double Cd = 1.0;
     const double Axy = 0.05;
 
-    p_vec3 rel_vel = p_vec_sub(&wind, &obj.vel);
+    p_vec3 rel_vel = p_vec_sub(&obj.vel, &wind);
     p_vec3 abs_vel = p_vec_abs(&rel_vel);
     p_vec3 rel_vel_sign_sq = p_vec_dot(&abs_vel, &rel_vel);
 
@@ -365,6 +369,7 @@ void p_step() {
 
     //printf("x=%lf, y=%lf, z=%lf\n", wind_acc.x, wind_acc.y, wind_acc.z);
 
+    // FIX: this causes acceleration to explode
     obj.acc = p_vec_sum(&obj.acc, &wind_acc);
 
     // Linear integrator
@@ -512,7 +517,7 @@ void* p_update() {
             cb_push(&val1_cb, obj.rot.y);
             cb_push(&val2_cb, ctr_intr.dbg.rot_y);
 
-            printf("real: %lf, pred: %lf\n", obj.rot.x, ctr_intr.dbg.rot_x);
+            //printf("real: %lf, pred: %lf\n", obj_angles.y, ctr_intr.dbg.ori_y);
             //cb_push(&val2_cb, );
         }
         
@@ -733,17 +738,35 @@ int main(void) {
             cur_y += 10;
             char pos_txt[64];
             
-            cur_y += text_size;
-            sprintf(pos_txt, "X: %10.2lfm", obj.pos.x);
+            sprintf(pos_txt, "X: %10.2lf", obj.pos.x);
             DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            DrawText("m", 175, cur_y, text_size, WHITE);
             
             cur_y += text_size;
-            sprintf(pos_txt, "Y: %10.2lfm", obj.pos.y);
+            sprintf(pos_txt, "Y: %10.2lf", obj.pos.y);
             DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            DrawText("m", 175, cur_y, text_size, WHITE);
             
             cur_y += text_size;
-            sprintf(pos_txt, "Z: %10.2lfm", obj.pos.z);
+            sprintf(pos_txt, "Z: %10.2lf", obj.pos.z);
             DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            DrawText("m", 175, cur_y, text_size, WHITE);
+            
+            p_vec3 obj_angles = p_quat_to_euler(&obj.ori);
+            cur_y += text_size;
+            sprintf(pos_txt, "RX: %8.2lf", obj_angles.x * RAD2DEG);
+            DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            DrawText("deg", 175, cur_y, text_size, WHITE);
+            
+            cur_y += text_size;
+            sprintf(pos_txt, "RY: %8.2lf", obj_angles.y * RAD2DEG);
+            DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            DrawText("deg", 175, cur_y, text_size, WHITE);
+            
+            cur_y += text_size;
+            sprintf(pos_txt, "RZ: %8.2lf", obj_angles.z * RAD2DEG);
+            DrawText(pos_txt, 10, cur_y, text_size, WHITE);
+            DrawText("deg", 175, cur_y, text_size, WHITE);
             
             cur_y += text_size;
             DrawLineEx(
