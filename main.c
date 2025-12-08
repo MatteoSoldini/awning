@@ -32,24 +32,24 @@ float c_pitch_rad = 30.0f * DEG2RAD;
 ControllerInterface ctr_intr = {0};
 
 // Generate a random unitary gaussian distributed variable using Box–Muller transform
-double rand_gauss() {
-    double u1 = (rand() + 1.0) / (RAND_MAX + 1.0);
-    double u2 = (rand() + 1.0) / (RAND_MAX + 1.0);
+f64 rand_gauss() {
+    f64 u1 = (rand() + 1.0) / (RAND_MAX + 1.0);
+    f64 u2 = (rand() + 1.0) / (RAND_MAX + 1.0);
     return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
 }
 
 // The physics world assumes Z up
 typedef struct {
-    double x;
-    double y;
-    double z;
+    f64 x;
+    f64 y;
+    f64 z;
 } p_vec3;
 
 typedef struct {
-    double r;
-    double i;
-    double j;
-    double k;
+    f64 r;
+    f64 i;
+    f64 j;
+    f64 k;
 } p_quat;
 
 void p_quat_to_mtx4(float mtx[16], p_quat q) {
@@ -79,7 +79,7 @@ void p_quat_to_mtx4(float mtx[16], p_quat q) {
     mtx[15] = 1;
 }
 
-void p_set_quat_to_axis_angle(p_quat *quat, p_vec3 *axis, double angle_rad) {
+void p_set_quat_to_axis_angle(p_quat *quat, p_vec3 *axis, f64 angle_rad) {
     quat->r = cosf(angle_rad / 2.0f);
     quat->i = axis->x * sinf(angle_rad / 2.0f);
     quat->j = axis->y * sinf(angle_rad / 2.0f);
@@ -97,7 +97,7 @@ p_quat p_quat_mul(p_quat *q1, p_quat *q2) {
 }
 
 void p_quat_norm(p_quat *q) {
-    double norm = sqrt(
+    f64 norm = sqrt(
         q->r*q->r + \
         q->i*q->i + \
         q->j*q->j + \
@@ -130,18 +130,18 @@ p_vec3 p_quat_to_euler(p_quat *q) {
     p_vec3 angles = {0};
 
     // roll (x-axis rotation)
-    double sinr_cosp = 2 * (q->r * q->i + q->j * q->k);
-    double cosr_cosp = 1 - 2 * (q->i * q->i + q->j * q->j);
+    f64 sinr_cosp = 2 * (q->r * q->i + q->j * q->k);
+    f64 cosr_cosp = 1 - 2 * (q->i * q->i + q->j * q->j);
     angles.x = atan2(sinr_cosp, cosr_cosp);
 
     // pitch (y-axis rotation)
-    double sinp = sqrt(1 + 2 * (q->r * q->j - q->i * q->k));
-    double cosp = sqrt(1 - 2 * (q->r * q->j - q->i * q->k));
+    f64 sinp = sqrt(1 + 2 * (q->r * q->j - q->i * q->k));
+    f64 cosp = sqrt(1 - 2 * (q->r * q->j - q->i * q->k));
     angles.y = 2 * atan2(sinp, cosp) - M_PI / 2;
 
     // yaw (z-axis rotation)
-    double siny_cosp = 2 * (q->r * q->k + q->i * q->j);
-    double cosy_cosp = 1 - 2 * (q->j * q->j + q->k * q->k);
+    f64 siny_cosp = 2 * (q->r * q->k + q->i * q->j);
+    f64 cosy_cosp = 1 - 2 * (q->j * q->j + q->k * q->k);
     angles.z = atan2(siny_cosp, cosy_cosp);
 
     return angles;
@@ -179,7 +179,7 @@ p_vec3 p_vec_cross(p_vec3 *v1, p_vec3 *v2) {
     };
 }
 
-p_vec3 p_vec_scale(p_vec3 *v, double f) {
+p_vec3 p_vec_scale(p_vec3 *v, f64 f) {
     return (p_vec3) {
         .x = v->x * f,
         .y = v->y * f,
@@ -207,11 +207,11 @@ p_vec3 p_vec_abs(p_vec3 *v) {
 // reference: https://www.grc.nasa.gov/www/k-12/airplane/atmosmet.html
 
 // Returns Pa pressure
-double pressure(double alt_m) {
-    const double p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
-    const double t0 = 15.04;  // Celsius    Temperature at sea-level
+f64 pressure(double alt_m) {
+    const f64 p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
+    const f64 t0 = 15.04;  // Celsius    Temperature at sea-level
 
-    double t = t0 - 0.00649 * alt_m;
+    f64 t = t0 - 0.00649 * alt_m;
     return p0 * pow((t + 273.1) / 288.08, 5.2561);
 }
 
@@ -225,24 +225,33 @@ typedef struct {
                     // It is similar to axis-angle representation
     p_vec3 rot;     // rad/s
     
-    double mass;    // Kg
+    f64 mass;    // Kg
     p_vec3 inertia; // Kg*m^2. It assumes a symmetric body
 } p_rigid_body;
 
 // Physics world
-const double g = 9.81; // m/s^2
-const double air_rho = 1.293; // Density of pure, dry air at a temperature of 273 K
+const f64 g = 9.81; // m/s^2
+const f64 air_rho = 1.293; // Density of pure, dry air at a temperature of 273 K
                               // and a pressure of 101.325 kPa.
 p_vec3 wind = { 0.0, 0.0, 0.0 }; // Uniform wind (m/s^2)
 
 // Quadcopter
 // Reference: https://github.com/PX4/PX4-gazebo-models/tree/6cfb3e362e1424caccb7363dca7e63484e44d188/models/x500_base
 // https://ieeexplore.ieee.org/document/6289431
-const double kf = 1e-2;        // Thrust coefficient (N / (rad/s)^2)
-const double km = 1e-4;        // Propeller drag coefficient (N / (rad/s)^2)
-const double arm_l = 0.2;      // Arm length (m)
-const double tau_m = 0.05;     // Motor time constant (s)
-const double rot_max_w = 50.0; // Max rotor rotation speed (rad/s)
+#define NUM_ARMS 4
+
+const f64 kf =        1e-2; // Thrust coefficient (N / (rad/s)^2)
+const f64 km =        1e-4; // Propeller drag coefficient (N / (rad/s)^2)
+const f64 arm_l =     0.2;  // Arm length (m)
+const f64 tau_m =     0.05; // Motor time constant (s)
+const f64 rot_max_w = 50.0; // Max rotor rotation speed (rad/s)
+
+const p_vec3 arm_dir[NUM_ARMS] = {
+    {.x =  0.5, .y = -0.5, .z = 0.0 }, // M0
+    {.x =  0.5, .y =  0.5, .z = 0.0 }, // M1
+    {.x = -0.5, .y =  0.5, .z = 0.0 }, // M2
+    {.x = -0.5, .y = -0.5, .z = 0.0 }  // M3
+};
 
 p_rigid_body obj = {
     .pos = { 0.0, 0.0, 0.5},
@@ -254,7 +263,7 @@ p_rigid_body obj = {
     .inertia = { 0.2, 0.2, 0.4 }
 };
 
-double rot_w[4] = {0};
+f64 rot_w[NUM_ARMS] = {0};
 
 uint64_t get_micros() {
     struct timespec ts;
@@ -265,10 +274,10 @@ uint64_t get_micros() {
 #define CB_CAPACITY 128
 typedef struct {
     size_t top;
-    double data[CB_CAPACITY];
+    f64 data[CB_CAPACITY];
 } CircularBuffer;
 
-void cb_push(CircularBuffer *cb, double a) {
+void cb_push(CircularBuffer *cb, f64 a) {
     cb->top = (cb->top + 1) % CB_CAPACITY;
     cb->data[cb->top] = a;
 }
@@ -276,8 +285,8 @@ void cb_push(CircularBuffer *cb, double a) {
 CircularBuffer val1_cb = {0};
 CircularBuffer val2_cb = {0};
 
-const double p_freq = 1000.0; // Hz
-const double p_dt = 1.0 / p_freq;
+const f64 p_freq = 1000.0; // Hz
+const f64 p_dt = 1.0 / p_freq;
 
 // TODO: all the physics here could be implemented as matrix operations.
 // This way we can unify the code for vec and matrix
@@ -301,18 +310,11 @@ void p_step() {
     //    ->        <-
     //    ccw       cw
     
-    double s = arm_l / sqrt(2.0);
-    p_vec3 arm_dir[4] = {
-        {.x = s,  .y = -s, .z = 0.0 }, // M0
-        {.x = s,  .y = s,  .z = 0.0 }, // M1
-        {.x = -s, .y = s,  .z = 0.0 }, // M2
-        {.x = -s, .y = -s, .z = 0.0 }  // M3
-    };
     
     // Convert controller command to motor rotation
-    double cmd_rot_w[4] = {0};
+    f64 cmd_rot_w[4] = {0};
     for (size_t i=0;i<4;i++) {
-        double cmd = ctr_intr.rot_cmd[i];
+        f64 cmd = ctr_intr.rot_cmd[i];
 
         // Clamp command
         if (cmd < 0.0) cmd = 0.0;
@@ -357,8 +359,8 @@ void p_step() {
     // rho -> Air density (Kg/m^3)
     // Cd -> (Uniform) drag coefficient
     // A -> Cross-section area (m^2)
-    const double Cd = 1.0;
-    const double Axy = 0.05;
+    const f64 Cd = 1.0;
+    const f64 Axy = 0.05;
 
     p_vec3 rel_vel = p_vec_sub(&obj.vel, &wind);
     p_vec3 abs_vel = p_vec_abs(&rel_vel);
@@ -383,10 +385,12 @@ void p_step() {
     // Torque
     // torque = r x F (Nm = Kg*m^2/s^2)
     
+
     // Motor torque (pitch, roll)
     p_vec3 mot_trq[4] = {0};
     for (size_t i=0; i<4; i++) {
-        mot_trq[i] = p_vec_cross(&arm_dir[i], &mot_f[i]);
+        p_vec3 arm = p_vec_scale(&arm_dir[i], arm_l);
+        mot_trq[i] = p_vec_cross(&arm, &mot_f[i]);
     }
 
     p_vec3 motor_trq = {0};
@@ -438,35 +442,35 @@ void p_step() {
 
 // Barometer parameters
 // reference: BMP390
-const double s_upt_fq = 50.0;
+const f64 s_upt_fq = 50.0;
 const uint64_t s_udt_mc = 1.0/s_upt_fq * 1e6;
-const double s_sdev = 3.0;
+const f64 s_sdev = 3.0;
 const size_t s_read_bits = 20;
 const size_t s_bit_mask = (1 << s_read_bits) - 1;
 
 // IMU parameters
 // reference: IIM42653
 // TODO: add bias
-const double imu_upt_fq = 200.0;
+const f64 imu_upt_fq = 200.0;
 const uint64_t imu_udt_mc = 1.0/imu_upt_fq * 1e6;
 const size_t imu_read_bits = 16;
 
-const double imu_acc_sdev = 0.00637;
-const double imu_acc_max_value = 8.0*g;     // m/s^2  TO CHECK
+const f64 imu_acc_sdev = 0.00637;
+const f64 imu_acc_max_value = 8.0*g;     // m/s^2  TO CHECK
 
-const double imu_rot_sdev = 0.05 * DEG2RAD; // rad/s
-const double imu_rot_max_value = 250.0;     // rad/s  TO CHECK
+const f64 imu_rot_sdev = 0.05 * DEG2RAD; // rad/s
+const f64 imu_rot_max_value = 250.0;     // rad/s  TO CHECK
 
 // Physics parameters
-const double p_upt_fq = 1000.0;
+const f64 p_upt_fq = 1000.0;
 const uint64_t p_udt_mc = 1.0/p_upt_fq * 1e6;
-double p_real_fq = 0.0;
+f64 p_real_fq = 0.0;
 
 // Controller
 const uint64_t c_udt_mc = 1.0/CONTROL_FQ * 1e6;
 
-int64_t simulate_sensor(double real, double max, double min, double sdev, size_t n_bits) {
-    double sigma = sdev * rand_gauss();
+int64_t simulate_sensor(f64 real, double max, double min, double sdev, size_t n_bits) {
+    f64 sigma = sdev * rand_gauss();
     size_t sat_value = (1 << n_bits) - 1;
 
     real += sigma;
@@ -474,7 +478,7 @@ int64_t simulate_sensor(double real, double max, double min, double sdev, size_t
     if (real > max) real = max;
     if (real < min) real = min;
 
-    double norm = real / (max - min);
+    f64 norm = real / (max - min);
     return norm * sat_value;
 }
 
@@ -572,8 +576,8 @@ void DrawGraph(
     int height,
     CircularBuffer *cb_real,
     CircularBuffer *cb_tap,
-    double maxV,
-    double minV
+    f64 maxV,
+    f64 minV
 ) {
     DrawRectangle(posX, posY, width, height, BLACK);
     
@@ -585,10 +589,10 @@ void DrawGraph(
         for (size_t i=0; i<CB_CAPACITY; i++) {
             cb_idx = (cb_idx + 1) % CB_CAPACITY;
 
-            double value = cb->data[cb_idx];
+            f64 value = cb->data[cb_idx];
 
             // Map from (posY + height, posY) and (minV, maxV)
-            float x = (double)width / CB_CAPACITY * i;
+            float x = (f64)width / CB_CAPACITY * i;
 
             // clamp value
             if (value > maxV) value = maxV;
@@ -734,8 +738,35 @@ int main(void) {
                 2.0,
                 (Color){150, 150, 150, 255}
             );
+            
+            i32 panel_center = panel_size / 2;
 
+            for (i32 i=0; i<NUM_ARMS; i++) {
+                p_vec3 arm_d = arm_dir[i];
+                i32 m_pos_x = panel_center - arm_d.x * panel_center;
+                i32 m_pos_y = cur_y + panel_center - arm_d.y * panel_center;
+                DrawLineEx(
+                    (Vector2){ m_pos_x, m_pos_y },
+                    (Vector2){ panel_center, cur_y + panel_center },
+                    5.0,
+                    (Color){150, 150, 150, 255}
+                );
+                DrawCircle(m_pos_x, m_pos_y, 30.0f, (Color){150, 150, 150, 255});
+                
+                char mot_txt[64];
+                sprintf(mot_txt, "%3.2lf", rot_w[i]);
+                DrawText(mot_txt, m_pos_x, m_pos_y, text_size, WHITE);
+            }
+            
+            cur_y += panel_size;
+            DrawLineEx(
+                (Vector2){0, cur_y},
+                (Vector2){panel_size, cur_y},
+                2.0,
+                (Color){150, 150, 150, 255}
+            );
             cur_y += 10;
+            
             char pos_txt[64];
             
             sprintf(pos_txt, "X: %10.2lf", obj.pos.x);
