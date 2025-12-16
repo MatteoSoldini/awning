@@ -461,6 +461,15 @@ const f64 imu_acc_max_value = 8.0*g;     // m/s^2  TO CHECK
 const f64 imu_rot_sdev = 0.05 * DEG2RAD; // rad/s
 const f64 imu_rot_max_value = 250.0;     // rad/s  TO CHECK
 
+// GNSS parameters
+// reference: u-blox NEO-M8N
+// source: https://www.u-blox.com/sites/default/files/NEO-M8-FW3_DataSheet_UBX-15031086.pdf
+// 
+// Since this is a more sophisticated sensor than those used before, it has it's own protocol which
+// is difficult to simulate in this case.
+// For the moment let's just assume that we get lat/lon and are passed plainly to the control code
+
+
 // Physics parameters
 const f64 p_upt_fq = 1000.0;
 const uint64_t p_udt_mc = 1.0/p_upt_fq * 1e6;
@@ -609,9 +618,11 @@ void DrawGraph(
     }
 }
 
+Color viewport_bg_col = (Color){ 30, 30, 30, 255 };
+
 int main(void) {
-    int win_w = 1280;
-    int win_h = 720;
+    i32 win_w = 1920;
+    i32 win_h = 1080;
     
     const int panel_size = 300;
     const int text_size = 24;
@@ -632,17 +643,17 @@ int main(void) {
     
     p_init();
     
-    // Fill graph with random data
-    for (size_t i=0; i<CB_CAPACITY; i++) {
-        cb_push(&val1_cb, rand_gauss());
-    }
-
     // Main game loop
     while (!WindowShouldClose()) {
-        win_w = GetScreenWidth();
-        win_h = GetScreenHeight();
+        i32 new_win_w = GetScreenWidth();
+        i32 new_win_h = GetScreenHeight();
+        if (win_w != new_win_w || win_h != new_win_h) {
+            win_w = new_win_w;
+            win_h = new_win_h;
 
-        // TODO: recreate target texture on window resize
+            UnloadRenderTexture(target);
+            target = LoadRenderTexture(win_w - panel_size, win_h);
+        }
 
         if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
             Vector2 mouse_delta = GetMouseDelta();
@@ -653,12 +664,6 @@ int main(void) {
             if (c_pitch_rad > PI/2.0f - 0.1f) c_pitch_rad = PI/2.0f - 0.1f;
             if (c_pitch_rad < -PI/2.0f + 0.1f) c_pitch_rad = -PI/2.0f + 0.1f;
         }
-
-        //if (IsKeyDown(KEY_W)) {
-        //    obj.rot.x = 1.0;
-        //} else {
-        //    obj.rot.x = 0.0;
-        //}
 
         c_radius -= GetMouseWheelMove() * CAM_SCROLL_SPEED;
         if (c_radius < CAM_MIN_RADIUS) c_radius = CAM_MIN_RADIUS;
@@ -672,7 +677,7 @@ int main(void) {
         camera.position.z = camera.target.z + c_radius * cosf(c_pitch_rad) * sinf(c_yaw_rad);
         
         BeginTextureMode(target);
-            ClearBackground(RAYWHITE);
+            ClearBackground(viewport_bg_col);
 
             BeginMode3D(camera);
                 rlPushMatrix();
@@ -694,18 +699,19 @@ int main(void) {
                 rlPopMatrix();
                 
                 // Floor tiles
-                const int floor_extent = 25;
-                const float tile_size = 1.0f;
-                for (int y = -floor_extent; y < floor_extent; y++) {
-                    for (int x = -floor_extent; x < floor_extent; x++) {
-                        if ((y + x) & 1) {
-                            DrawPlane((Vector3){ x*tile_size, 0.0f, y*tile_size}, (Vector2){ tile_size, tile_size }, WHITE);
-                        }
-                        else {
-                            DrawPlane((Vector3){ x*tile_size, 0.0f, y*tile_size}, (Vector2){ tile_size, tile_size }, LIGHTGRAY);
-                        }
-                    }
-                }
+
+                //const int floor_extent = 25;
+                //const float tile_size = 1.0f;
+                //for (int y = -floor_extent; y < floor_extent; y++) {
+                //    for (int x = -floor_extent; x < floor_extent; x++) {
+                //        if ((y + x) & 1) {
+                //            DrawPlane((Vector3){ x*tile_size, 0.0f, y*tile_size}, (Vector2){ tile_size, tile_size }, WHITE);
+                //        }
+                //        else {
+                //            DrawPlane((Vector3){ x*tile_size, 0.0f, y*tile_size}, (Vector2){ tile_size, tile_size }, LIGHTGRAY);
+                //        }
+                //    }
+                //}
 
                 DrawGrid(10, 1.0f);
             EndMode3D();
@@ -741,21 +747,30 @@ int main(void) {
             
             i32 panel_center = panel_size / 2;
 
-            for (i32 i=0; i<NUM_ARMS; i++) {
+            for (u64 i=0; i<NUM_ARMS; i++) {
                 p_vec3 arm_d = arm_dir[i];
                 i32 m_pos_x = panel_center - arm_d.x * panel_center;
                 i32 m_pos_y = cur_y + panel_center - arm_d.y * panel_center;
+                
+                u8 start_color[3] = {0,   200, 0};
+                u8 end_color[3] =   {200, 0,   0};
+                
+                u8 int_color[3] = {0};
+                for (u64 c=0; c<3; c++) {
+                    int_color[c] = start_color[c] + (end_color[c] - start_color[c]) * ctr_intr.rot_cmd[i];
+                }
+
                 DrawLineEx(
                     (Vector2){ m_pos_x, m_pos_y },
                     (Vector2){ panel_center, cur_y + panel_center },
                     5.0,
                     (Color){150, 150, 150, 255}
                 );
-                DrawCircle(m_pos_x, m_pos_y, 30.0f, (Color){150, 150, 150, 255});
+                DrawCircle(m_pos_x, m_pos_y, 30.0f, (Color){int_color[0], int_color[1], int_color[2], 255});
                 
                 char mot_txt[64];
-                sprintf(mot_txt, "%3.2lf", rot_w[i]);
-                DrawText(mot_txt, m_pos_x, m_pos_y, text_size, WHITE);
+                sprintf(mot_txt, "%2.2lf", ctr_intr.rot_cmd[i]);
+                DrawText(mot_txt, m_pos_x - 22, m_pos_y - 10, text_size, WHITE);
             }
             
             cur_y += panel_size;
