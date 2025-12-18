@@ -290,67 +290,84 @@ Mat mat_inv(Mat *M) {
     return M_inv;
 }
 
+enum {
+    S_POS_X, // m
+    S_POS_Y, // m
+    S_POS_Z, // m
+    S_VEL_X, // m/s
+    S_VEL_Y, // m/s
+    S_VEL_Z, // m/s
+    S_ACC_X, // m/s^2
+    S_ACC_Y, // m/s^2
+    S_ACC_Z, // m/s^2
+    S_ORI_X, // rad
+    S_ORI_Y, // rad
+    S_ORI_Z, // rad
+    S_ROT_X, // rad/s
+    S_ROT_Y, // rad/s
+    S_ROT_Z, // rad/s
+    S_STATE_DIM
+};
 
-// TODO: There should be a smartest/cleaner way to populate these matrices.
-// Like a enum for indexing
-
-// State
-Mat X = { .r=9, .c=1, {
-    0.0, // pos_z (m)
-    0.0, // vel_z (m/s)
-    0.0, // acc_z (m/s^2)
-    0.0, // ori_x (rad)         // TODO: Using Euler angles, this is good enough for small angles.
-    0.0, // ori_y (rad)         // but we should later move on to quaternions
-    0.0, // ori_z (rad)
-    0.0, // rot_x (rad/s)
-    0.0, // rot_y (rad/s)
-    0.0  // rot_z (rad/s)
-}};
+// State vector
+Mat X = { .r=S_STATE_DIM, .c=1, {0} };
 
 // State transition matrix
-// it defines how we predict the state to changes
-// basically the physics
+Mat F = { .r=S_STATE_DIM, .c=S_STATE_DIM };
 
-Mat F = { .r=9, .c=9, {
-    // pos_z, vel_z,  acc_z,         ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
-       1.0,   c_dt,   0.5*c_dt*c_dt, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    // pos_z
-       0.0,   1.0,    c_dt,          0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    // vel_z
-       0.0,   0.0,    1.0,           0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    // acc_z
-       0.0,   0.0,    0.0,           1.0,   0.0,   0.0,   c_dt,  0.0,   0.0,    // ori_x
-       0.0,   0.0,    0.0,           0.0,   1.0,   0.0,   0.0,   c_dt,  0.0,    // ori_y
-       0.0,   0.0,    0.0,           0.0,   0.0,   1.0,   0.0,   0.0,   c_dt,   // ori_z
-       0.0,   0.0,    0.0,           0.0,   0.0,   0.0,   1.0,   0.0,   0.0,    // rot_x
-       0.0,   0.0,    0.0,           0.0,   0.0,   0.0,   0.0,   1.0,   0.0,    // rot_y
-       0.0,   0.0,    0.0,           0.0,   0.0,   0.0,   0.0,   0.0,   1.0     // rot_z
-}};
+// State covariance matrix
+Mat P = { .r=S_STATE_DIM, .c=S_STATE_DIM };
 
-// State certainty
-Mat P = { .r=9, .c=9, {
-    // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
-       0.1,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.1,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.1,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.1,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.1,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.1,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.1,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.1,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.1
-}};
+// Process covariance matrix
+Mat Q = { .r=S_STATE_DIM, .c=S_STATE_DIM };
 
-// Process noise covariance
-Mat Q = { .r=9, .c=9, {
-    // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
-       1e-3,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   1e-2,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   1e-1,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   1e-2,  0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   1e-2,  0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   1e-2,  0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-1,  0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-1,  0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1e-1
-}};
+#define SET_XYZ(M, r0, c0, val) \
+    MAT_AT(M, r0+0, c0+0) = val; \
+    MAT_AT(M, r0+1, c0+1) = val; \
+    MAT_AT(M, r0+2, c0+2) = val;
+
+void c_init() {
+    // pos
+    SET_XYZ(F, S_POS_X, S_POS_X, 1.0);
+    SET_XYZ(F, S_POS_X, S_VEL_X, c_dt);
+    SET_XYZ(F, S_POS_X, S_ACC_X, 0.5*c_dt*c_dt);
+    
+    SET_XYZ(P, S_POS_X, S_POS_X, 1e2);
+    
+    SET_XYZ(Q, S_POS_X, S_POS_X, 1e-3);
+
+    // vel
+    SET_XYZ(F, S_VEL_X, S_VEL_X, 1.0);
+    SET_XYZ(F, S_VEL_X, S_ACC_X, c_dt);
+    
+    SET_XYZ(P, S_VEL_X, S_VEL_X, 1e-2);
+    
+    SET_XYZ(Q, S_VEL_X, S_VEL_X, 1e-2);
+    
+    // acc
+    SET_XYZ(F, S_ACC_X, S_ACC_X, 1.0);
+    
+    SET_XYZ(P, S_ACC_X, S_ACC_X, 1e-2);
+    
+    SET_XYZ(Q, S_ACC_X, S_ACC_X, 1e-1);
+
+    // ori
+    SET_XYZ(F, S_ORI_X, S_ORI_X, 1.0);
+    SET_XYZ(F, S_ORI_X, S_ROT_X, c_dt);
+    
+    SET_XYZ(P, S_ORI_X, S_ORI_X, 1e-2);
+    
+    SET_XYZ(Q, S_ORI_X, S_ORI_X, 1e-2);
+
+    // rot
+    SET_XYZ(F, S_ROT_X, S_ROT_X, 1.0);
+    
+    SET_XYZ(P, S_ROT_X, S_ROT_X, 1e-2);
+    
+    SET_XYZ(Q, S_ROT_X, S_ROT_X, 1e-1);
+
+    mat_print(&X);
+}
 
 Mat P_pred = {0};
 
@@ -417,7 +434,7 @@ void kf_correct(
 // in the MCU every 1ms (1000Hz)
 u64 bar_l = 0;
 u64 imu_l = 0;
-void control_step(ControllerInterface *intr) {
+void c_step(ControllerInterface *intr) {
     bar_l++;
     imu_l++;
     
@@ -447,14 +464,11 @@ void control_step(ControllerInterface *intr) {
         intr->dbg.alt_m_rdng = alt_m;
 #endif
 
-        Mat Z = { .r=1, .c=1, { alt_m } };
-        Mat R = { .r=1, .c=1, {
-            0.25    // m^2
-        }};
-        Mat H = { .r=1, .c=9, {
-            // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
-               1.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0
-        }};
+        Mat Z = { .r=1, .c=1, { alt_m }};
+        Mat R = { .r=1, .c=1, { 0.25  }};
+        Mat H = { .r=1, .c=S_STATE_DIM };
+        MAT_AT(H, 0, S_POS_Z) = 1.0;
+
         kf_correct(&Z, &H, &R);
     }
 
@@ -541,17 +555,16 @@ void control_step(ControllerInterface *intr) {
         R.data[6 + 6*R.c] = 0.05 * DEG2RAD;
         R.data[7 + 7*R.c] = 0.05 * DEG2RAD;
         
-        Mat H = { .r=Z.r, .c=X.r, {
-            // pos_z, vel_z, acc_z, ori_x, ori_y, ori_z, rot_x, rot_y, rot_z
-               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-               0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-               0.0,   0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-               0.0,   0.0,   0.0,   0.0,   1.0,   0.0,   0.0,   0.0,   0.0,
-               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,   0.0,
-               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0,   0.0,
-               0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   1.0
-        }};
+        Mat H = { .r=Z.r, .c=S_STATE_DIM };
+        MAT_AT(H, 0, S_ACC_X) = 1.0;
+        MAT_AT(H, 1, S_ACC_Y) = 1.0;
+        MAT_AT(H, 2, S_ACC_Z) = 1.0;
+        MAT_AT(H, 3, S_ORI_X) = 1.0;
+        MAT_AT(H, 4, S_ORI_Y) = 1.0;
+        MAT_AT(H, 5, S_ROT_X) = 1.0;
+        MAT_AT(H, 6, S_ROT_Y) = 1.0;
+        MAT_AT(H, 7, S_ROT_Z) = 1.0;
+        
         kf_correct(&Z, &H, &R);
     }
 
@@ -576,15 +589,15 @@ void control_step(ControllerInterface *intr) {
     intr->rot_cmd[3] = out_cmd - out_x_cmd + out_y_cmd;
 
 #ifdef CONTROL_DEBUG
-    intr->dbg.pos_z = X.data[0];
-    intr->dbg.vel_z = X.data[1];
-    intr->dbg.acc_z = X.data[2];
-    intr->dbg.ori_x = X.data[3];
-    intr->dbg.ori_y = X.data[4];
-    intr->dbg.ori_z = X.data[5];
-    intr->dbg.rot_x = X.data[6];
-    intr->dbg.rot_y = X.data[7];
-    intr->dbg.rot_z = X.data[8];
+    intr->dbg.pos_z = X.data[S_POS_Z];
+    intr->dbg.vel_z = X.data[S_VEL_Z];
+    intr->dbg.acc_z = X.data[S_ACC_Z];
+    intr->dbg.ori_x = X.data[S_ORI_X];
+    intr->dbg.ori_y = X.data[S_ORI_Y];
+    intr->dbg.ori_z = X.data[S_ORI_Z];
+    intr->dbg.rot_x = X.data[S_ROT_X];
+    intr->dbg.rot_y = X.data[S_ROT_Y];
+    intr->dbg.rot_z = X.data[S_ROT_Z];
     intr->dbg.pid_out_vel = tgt_vel;
 #endif
 }

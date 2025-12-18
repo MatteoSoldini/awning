@@ -207,7 +207,7 @@ p_vec3 p_vec_abs(p_vec3 *v) {
 // reference: https://www.grc.nasa.gov/www/k-12/airplane/atmosmet.html
 
 // Returns Pa pressure
-f64 pressure(double alt_m) {
+f64 pressure(f64 alt_m) {
     const f64 p0 = 101325; // N/m^2 (Pa) Pressure at sea-level
     const f64 t0 = 15.04;  // Celsius    Temperature at sea-level
 
@@ -265,15 +265,15 @@ p_rigid_body obj = {
 
 f64 rot_w[NUM_ARMS] = {0};
 
-uint64_t get_micros() {
+u64 get_micros() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
+    return (u64)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
 }
 
 #define CB_CAPACITY 128
 typedef struct {
-    size_t top;
+    u64 top;
     f64 data[CB_CAPACITY];
 } CircularBuffer;
 
@@ -313,7 +313,7 @@ void p_step() {
     
     // Convert controller command to motor rotation
     f64 cmd_rot_w[4] = {0};
-    for (size_t i=0;i<4;i++) {
+    for (u64 i=0;i<4;i++) {
         f64 cmd = ctr_intr.rot_cmd[i];
 
         // Clamp command
@@ -325,13 +325,13 @@ void p_step() {
 
     // Let's model the motor rotation as a first order system:
     // rot_w(t) = rot_w(t-1) + (cmd_rot - rot_w(t-1)) * (dt / tau_m)
-    for (size_t i=0; i<4; i++) {
+    for (u64 i=0; i<4; i++) {
         rot_w[i] += (cmd_rot_w[i] - rot_w[i]) * (p_dt / tau_m);
     }
 
     // For now we assume ideal thrust model: f = kf * rot_w^2
     p_vec3 mot_f[4] = {0};
-    for (size_t i=0; i<4; i++) {
+    for (u64 i=0; i<4; i++) {
         mot_f[i].z = kf * rot_w[i] * rot_w[i];
     }
 
@@ -340,7 +340,7 @@ void p_step() {
     //}
 
     p_vec3 tot_mot_f = { 0.0, 0.0, 0.0 };
-    for (size_t i=0; i<4; i++) {
+    for (u64 i=0; i<4; i++) {
         tot_mot_f = p_vec_sum(&tot_mot_f, &mot_f[i]);
     }
 
@@ -388,13 +388,13 @@ void p_step() {
 
     // Motor torque (pitch, roll)
     p_vec3 mot_trq[4] = {0};
-    for (size_t i=0; i<4; i++) {
+    for (u64 i=0; i<4; i++) {
         p_vec3 arm = p_vec_scale(&arm_dir[i], arm_l);
         mot_trq[i] = p_vec_cross(&arm, &mot_f[i]);
     }
 
     p_vec3 motor_trq = {0};
-    for (size_t i=0; i<4; i++) {
+    for (u64 i=0; i<4; i++) {
         motor_trq = p_vec_sum(&motor_trq, &mot_trq[i]);
     }
 
@@ -443,17 +443,17 @@ void p_step() {
 // Barometer parameters
 // reference: BMP390
 const f64 s_upt_fq = 50.0;
-const uint64_t s_udt_mc = 1.0/s_upt_fq * 1e6;
+const u64 s_udt_mc = 1.0/s_upt_fq * 1e6;
 const f64 s_sdev = 3.0;
-const size_t s_read_bits = 20;
-const size_t s_bit_mask = (1 << s_read_bits) - 1;
+const u64 s_read_bits = 20;
+const u64 s_bit_mask = (1 << s_read_bits) - 1;
 
 // IMU parameters
 // reference: IIM42653
 // TODO: add bias
 const f64 imu_upt_fq = 200.0;
-const uint64_t imu_udt_mc = 1.0/imu_upt_fq * 1e6;
-const size_t imu_read_bits = 16;
+const u64 imu_udt_mc = 1.0/imu_upt_fq * 1e6;
+const u64 imu_read_bits = 16;
 
 const f64 imu_acc_sdev = 0.00637;
 const f64 imu_acc_max_value = 8.0*g;     // m/s^2  TO CHECK
@@ -468,19 +468,21 @@ const f64 imu_rot_max_value = 250.0;     // rad/s  TO CHECK
 // Since this is a more sophisticated sensor than those used before, it has it's own protocol which
 // is difficult to simulate in this case.
 // For the moment let's just assume that we get lat/lon and are passed plainly to the control code
-
+const f64 gnss_pos_sdev = 2.5*2.5;   // m
+const f64 gnss_udt_fq = 10.0;        // Hz
+const u64 gnss_upt_mc = 1.0/gnss_udt_fq * 1e6;
 
 // Physics parameters
 const f64 p_upt_fq = 1000.0;
-const uint64_t p_udt_mc = 1.0/p_upt_fq * 1e6;
+const u64 p_udt_mc = 1.0/p_upt_fq * 1e6;
 f64 p_real_fq = 0.0;
 
 // Controller
-const uint64_t c_udt_mc = 1.0/CONTROL_FQ * 1e6;
+const u64 c_udt_mc = 1.0/CONTROL_FQ * 1e6;
 
-int64_t simulate_sensor(f64 real, double max, double min, double sdev, size_t n_bits) {
+i64 simulate_sensor(f64 real, f64 max, f64 min, f64 sdev, u64 n_bits) {
     f64 sigma = sdev * rand_gauss();
-    size_t sat_value = (1 << n_bits) - 1;
+    u64 sat_value = (1 << n_bits) - 1;
 
     real += sigma;
 
@@ -492,18 +494,19 @@ int64_t simulate_sensor(f64 real, double max, double min, double sdev, size_t n_
 }
 
 void* p_update() {
-    uint64_t now_mc = get_micros();
+    u64 now_mc = get_micros();
     
-    uint64_t last_report_mc = now_mc;
-    size_t p_step_count = 0; 
+    u64 last_report_mc = now_mc;
+    u64 p_step_count = 0; 
     
-    uint64_t last_p_mc = now_mc;
-    uint64_t last_s_mc = now_mc;
-    uint64_t last_imu_mc = now_mc;
-    uint64_t last_c_mc = now_mc;
+    u64 last_p_mc =    now_mc;
+    u64 last_s_mc =    now_mc;
+    u64 last_imu_mc =  now_mc;
+    u64 last_c_mc =    now_mc;
+    u64 last_gnss_mc = now_mc;
 
     while (true) {
-        uint64_t now_mc = get_micros();
+        u64 now_mc = get_micros();
 
         // Update physics
         if (now_mc - last_p_mc >= p_udt_mc) {
@@ -522,7 +525,7 @@ void* p_update() {
         if (now_mc - last_s_mc >= s_udt_mc) {
             last_s_mc += s_udt_mc;
             
-            ctr_intr.pressure = (size_t)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
+            ctr_intr.pressure = (u64)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
             
             //printf("%lf\n", ctr_intr.dbg.acc_z);
 
@@ -556,11 +559,19 @@ void* p_update() {
             ctr_intr.imu_rot_z = simulate_sensor(obj.rot.z, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
         }
 
+        // Update GNSS
+        if (now_mc - last_gnss_mc >= gnss_upt_mc) {
+            last_gnss_mc += gnss_upt_mc;
+            
+            ctr_intr.pos_x = simulate_sensor(obj.pos.x * 100, INT32_MAX, INT32_MIN, gnss_pos_sdev, 32);
+            ctr_intr.pos_y = simulate_sensor(obj.pos.y * 100, INT32_MAX, INT32_MIN, gnss_pos_sdev, 32);
+        }
+
         // Controller step
         if (now_mc - last_c_mc >= c_udt_mc) {
             last_c_mc += c_udt_mc;
 
-            control_step(&ctr_intr);
+            c_step(&ctr_intr);
         }
 
         // Log every 1s
@@ -590,12 +601,12 @@ void DrawGraph(
 ) {
     DrawRectangle(posX, posY, width, height, BLACK);
     
-    for (size_t b=0; b<2; b++) {
+    for (u64 b=0; b<2; b++) {
         CircularBuffer *cb = b==0 ? cb_real : cb_tap;
         
         Vector2 points[CB_CAPACITY] = {0};
-        size_t cb_idx = cb->top;
-        for (size_t i=0; i<CB_CAPACITY; i++) {
+        u64 cb_idx = cb->top;
+        for (u64 i=0; i<CB_CAPACITY; i++) {
             cb_idx = (cb_idx + 1) % CB_CAPACITY;
 
             f64 value = cb->data[cb_idx];
@@ -642,6 +653,7 @@ int main(void) {
     SetTargetFPS(60);
     
     p_init();
+    c_init();
     
     // Main game loop
     while (!WindowShouldClose()) {
@@ -717,7 +729,7 @@ int main(void) {
             EndMode3D();
         EndTextureMode();
         
-        size_t cur_y = 0;
+        u64 cur_y = 0;
         BeginDrawing();
             ClearBackground((Color){ 30, 30, 30, 255 });
 

@@ -37,6 +37,8 @@ typedef struct {
     i16 imu_rot_x;
     i16 imu_rot_y;
     i16 imu_rot_z;
+    i32 pos_x;  // cm
+    i32 pos_y;  // cm
 
     // Controller Outputs
     f64 rot_cmd[4]; // [0, 1]
@@ -47,7 +49,9 @@ typedef struct {
 #endif
 } ControllerInterface;
 
+void c_init();
+
 #define CONTROL_FQ 1000
-void control_step(ControllerInterface *intr);
+void c_step(ControllerInterface *intr);
 
 #endif
