@@ -25,6 +25,11 @@ const f64 imu_fq = 200.0; // Make sure it's divisible by CONTROL_FQ
 const u64 imu_loops = CONTROL_FQ / imu_fq;
 const f64 imu_dt = 1.0 / imu_fq;
 
+// GNSS sensor
+const f64 gnss_fq = 10.0; // Make sure it's divisible by CONTROL_FQ
+const u64 gnss_loops = CONTROL_FQ / gnss_fq;
+const f64 gnss_dt = 1.0 / gnss_fq;
+
 static const f64 imu_acc_max_value = 8.0*g; // m/s^2
 f64 imu_acc_to_ms2(i16 raw_acc) {
     return ((f64)raw_acc / (f64)INT16_MAX) * imu_acc_max_value; 
@@ -90,6 +95,17 @@ PIDParams alt_pid_p = {
     .low = -1.0
 };
 PIDState alt_pid_s = {0};
+
+PIDParams pos_pid_p = {
+    .p = 1.0,
+    .i = 0.0,
+    .d = 0.0,
+    .dt = c_dt,
+    .high = 0.2,
+    .low = -0.2
+};
+PIDState pos_x_pid_s = {0};
+PIDState pos_y_pid_s = {0};
 
 PIDParams ori_pid_p = {
     .p = 1.0,
@@ -310,7 +326,7 @@ enum {
 };
 
 // State vector
-Mat X = { .r=S_STATE_DIM, .c=1, {0} };
+Mat X = { .r=S_STATE_DIM, .c=1 };
 
 // State transition matrix
 Mat F = { .r=S_STATE_DIM, .c=S_STATE_DIM };
@@ -366,10 +382,10 @@ void c_init() {
     
     SET_XYZ(Q, S_ROT_X, S_ROT_X, 1e-1);
 
-    mat_print(&X);
+    mat_print(&F);
 }
 
-Mat P_pred = {0};
+Mat P_pred = {0};   // TODO: is this really needed?
 
 void kf_predict(
     Mat *B, // Control transition matrix
@@ -430,25 +446,24 @@ void kf_correct(
     P = mat_mul(&IdminKH, &P_pred);
 }
 
-// Assume that the control_step() function is triggered by an interrupt
-// in the MCU every 1ms (1000Hz)
 u64 bar_l = 0;
 u64 imu_l = 0;
+u64 gnss_l = 0;
+
+// Assume that the control_step() function is triggered by an interrupt
+// in the MCU every 1ms (1000Hz)
 void c_step(ControllerInterface *intr) {
     bar_l++;
     imu_l++;
+    gnss_l++;
     
-    Mat B = {0};
-    B.r = 9;
-    B.c = 1;
-    
-    Mat U = {0};
-    U.r = 1;
-    U.c = 1;
+    Mat B = { .r=S_STATE_DIM, .c=1 };
+    Mat U = { .r=1, .c=1 };
     
     kf_predict(&B, &U);
 
-    // Read sensors
+    // --- Read sensors ---
+    // --- Barometer ---
     if (bar_l >= bar_loops) {
         bar_l=0;
 
@@ -472,6 +487,7 @@ void c_step(ControllerInterface *intr) {
         kf_correct(&Z, &H, &R);
     }
 
+    // --- IMU ---
     if (imu_l >= imu_loops) {
         imu_l=0;
 
@@ -493,9 +509,9 @@ void c_step(ControllerInterface *intr) {
         // https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
         // https://en.wikipedia.org/wiki/Rotation_matrix#Basic_3D_rotations
         
-        f64 alpha = X.data[3];
-        f64 beta  = X.data[4];
-        f64 gamma = X.data[5];
+        f64 alpha = X.data[S_ORI_X];
+        f64 beta  = X.data[S_ORI_Y];
+        f64 gamma = X.data[S_ORI_Z];
         
         Mat rot_mat_x = { .r=3, .c=3, {
             1.0, 0.0,        0.0,
@@ -567,21 +583,58 @@ void c_step(ControllerInterface *intr) {
         
         kf_correct(&Z, &H, &R);
     }
+    // --- GNSS ---
+    if (gnss_l >= gnss_loops) {
+        gnss_l=0;
 
-    // Velocity PID
-    f64 tgt_vel = pid_step(X.data[0], 10.0, &alt_pid_p, &alt_pid_s);
+        f64 pos_x = intr->pos_x / 100.0;
+        f64 pos_y = intr->pos_y / 100.0;
+
+#ifdef CONTROL_DEBUG
+        intr->dbg.pos_x_rdng = pos_x;
+        intr->dbg.pos_y_rdng = pos_y;
+#endif
+
+        Mat Z = { .r=2, .c=1, {
+            pos_x,
+            pos_y 
+        }};
+
+        const f64 gnss_pos_sdev = 2.5*2.5;   // m^2
+        Mat R = { .r=Z.r, .c=Z.r, { 
+            gnss_pos_sdev, 0.0,
+            0.0, gnss_pos_sdev
+        }};
+
+        Mat H = { .r=Z.r, .c=S_STATE_DIM };
+        MAT_AT(H, 0, S_POS_X) = 1.0;
+        MAT_AT(H, 1, S_POS_Y) = 1.0;
+
+        kf_correct(&Z, &H, &R);
+    }
+
+
+    // --- Attitude Control --- 
     
-    // Motor PID
+    // hover
+    f64 tgt_vel = pid_step(X.data[S_POS_Z], 10.0, &alt_pid_p, &alt_pid_s);
+
     const f64 hover_cmd = 0.3;
-    f64 out_cmd = hover_cmd + pid_step(X.data[1], tgt_vel, &mot_pid_p, &mot_pid_s);
+    f64 out_cmd = hover_cmd + pid_step(X.data[S_VEL_Z], tgt_vel, &mot_pid_p, &mot_pid_s);
 
-    f64 rot_x_tgt = pid_step(X.data[3], 0.0, &ori_pid_p, &ori_x_pid_s);
-    f64 out_x_cmd = pid_step(X.data[6], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
+    // pos -> ori
+    f64 ori_x_tgt = pid_step(X.data[S_POS_X], 0.0, &pos_pid_p, &pos_x_pid_s);
+    f64 ori_y_tgt = pid_step(X.data[S_POS_Y], 0.0, &pos_pid_p, &pos_y_pid_s);
+
+    // ori -> rot
+    f64 rot_x_tgt = pid_step(X.data[S_ORI_X], ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
+    f64 rot_y_tgt = pid_step(X.data[S_ORI_Y], ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
     
-    f64 rot_y_tgt = pid_step(X.data[4], 0.0, &ori_pid_p, &ori_y_pid_s);
-    f64 out_y_cmd = pid_step(X.data[7], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
+    // rot -> cmd
+    f64 out_x_cmd = pid_step(X.data[S_ROT_X], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
+    f64 out_y_cmd = pid_step(X.data[S_ROT_Y], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
     
-    // Motor mixer
+    // --- Motor mixer ---
     // fl > fr > rr > rl
     intr->rot_cmd[0] = out_cmd - out_x_cmd - out_y_cmd;
     intr->rot_cmd[1] = out_cmd + out_x_cmd - out_y_cmd;
@@ -589,6 +642,8 @@ void c_step(ControllerInterface *intr) {
     intr->rot_cmd[3] = out_cmd - out_x_cmd + out_y_cmd;
 
 #ifdef CONTROL_DEBUG
+    intr->dbg.pos_x = X.data[S_POS_X];
+    intr->dbg.pos_y = X.data[S_POS_Y];
     intr->dbg.pos_z = X.data[S_POS_Z];
     intr->dbg.vel_z = X.data[S_VEL_Z];
     intr->dbg.acc_z = X.data[S_ACC_Z];

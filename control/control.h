@@ -7,6 +7,8 @@
 
 typedef struct {
     // State prediction
+    f64 pos_x; // m
+    f64 pos_y; // m
     f64 pos_z; // m
     f64 vel_z; // m/s
     f64 acc_z; // m/s^2
@@ -23,6 +25,8 @@ typedef struct {
     f64 rot_x_rdng; // rot/s
     f64 rot_y_rdng; // rot/s
     f64 rot_z_rdng; // rot/s
+    f64 pos_x_rdng;
+    f64 pos_y_rdng;
 
     // PIDs
     f64 pid_out_vel;

@@ -563,8 +563,10 @@ void* p_update() {
         if (now_mc - last_gnss_mc >= gnss_upt_mc) {
             last_gnss_mc += gnss_upt_mc;
             
-            ctr_intr.pos_x = simulate_sensor(obj.pos.x * 100, INT32_MAX, INT32_MIN, gnss_pos_sdev, 32);
-            ctr_intr.pos_y = simulate_sensor(obj.pos.y * 100, INT32_MAX, INT32_MIN, gnss_pos_sdev, 32);
+            ctr_intr.pos_x = (i32)((obj.pos.x + (gnss_pos_sdev * rand_gauss())) * 100);
+            ctr_intr.pos_y = (i32)((obj.pos.y + (gnss_pos_sdev * rand_gauss())) * 100);
+
+            printf("real: %lf, pred: %lf\n", obj.pos.x, ctr_intr.dbg.pos_x);
         }
 
         // Controller step
