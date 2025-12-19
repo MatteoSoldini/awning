@@ -99,7 +99,7 @@ PIDState alt_pid_s = {0};
 PIDParams pos_pid_p = {
     .p = 1.0,
     .i = 0.0,
-    .d = 0.0,
+    .d = 0.5,
     .dt = c_dt,
     .high = 0.2,
     .low = -0.2
@@ -305,6 +305,8 @@ Mat mat_inv(Mat *M) {
 
     return M_inv;
 }
+
+// TODO: move to Z down convetion so ori -> acc is sign consistent
 
 enum {
     S_POS_X, // m
@@ -623,13 +625,21 @@ void c_step(ControllerInterface *intr) {
     f64 out_cmd = hover_cmd + pid_step(X.data[S_VEL_Z], tgt_vel, &mot_pid_p, &mot_pid_s);
 
     // pos -> ori
-    f64 ori_x_tgt = pid_step(X.data[S_POS_X], 0.0, &pos_pid_p, &pos_x_pid_s);
-    f64 ori_y_tgt = pid_step(X.data[S_POS_Y], 0.0, &pos_pid_p, &pos_y_pid_s);
+    f64 ori_x_tgt = pid_step(X.data[S_POS_Y], 0.0, &pos_pid_p, &pos_x_pid_s);
+    f64 ori_y_tgt = pid_step(X.data[S_POS_X], 0.0, &pos_pid_p, &pos_y_pid_s);
 
     // ori -> rot
-    f64 rot_x_tgt = pid_step(X.data[S_ORI_X], ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
+    f64 rot_x_tgt = pid_step(X.data[S_ORI_X], -ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
     f64 rot_y_tgt = pid_step(X.data[S_ORI_Y], ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
     
+    printf(
+        "pos_y: %lf, tgt_ori_x: %lf, ori_x: %lf, tgt_rot_x: %lf\n",
+        X.data[S_POS_Y],
+        ori_x_tgt,
+        X.data[S_ORI_X],
+        rot_x_tgt
+    );
+
     // rot -> cmd
     f64 out_x_cmd = pid_step(X.data[S_ROT_X], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
     f64 out_y_cmd = pid_step(X.data[S_ROT_Y], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
