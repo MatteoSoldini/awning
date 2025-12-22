@@ -233,7 +233,7 @@ typedef struct {
 const f64 g = 9.81; // m/s^2
 const f64 air_rho = 1.293; // Density of pure, dry air at a temperature of 273 K
                               // and a pressure of 101.325 kPa.
-p_vec3 wind = { 0.0, 0.0, 0.0 }; // Uniform wind (m/s^2)
+p_vec3 wind = { 0.5, 0.1, 0.0 }; // Uniform wind (m/s^2)
 
 // Quadcopter
 // Reference: https://github.com/PX4/PX4-gazebo-models/tree/6cfb3e362e1424caccb7363dca7e63484e44d188/models/x500_base
@@ -468,9 +468,16 @@ const f64 imu_rot_max_value = 250.0;     // rad/s  TO CHECK
 // Since this is a more sophisticated sensor than those used before, it has it's own protocol which
 // is difficult to simulate in this case.
 // For the moment let's just assume that we get lat/lon and are passed plainly to the control code
-const f64 gnss_pos_sdev = 2.5*2.5;   // m
-const f64 gnss_udt_fq = 10.0;        // Hz
-const u64 gnss_upt_mc = 1.0/gnss_udt_fq * 1e6;
+const f64 gnss_pos_sdev = 2.5;   // m
+const f64 gnss_udt_fq =   10.0;  // Hz
+const u64 gnss_upt_mc =   1.0/gnss_udt_fq * 1e6;
+
+// Magnetometer parameters
+// TODO: for the moment we just simulate a magnetometer just by passing a noisy heading.
+//  We should implement a full lat/lon derived 3d magnetometer vector
+const f64 mag_sdev =   1e-2;   // rad
+const f64 mag_udt_fq = 100.0;  // Hz
+const u64 mag_upt_mc = 1.0/mag_udt_fq * 1e6;
 
 // Physics parameters
 const f64 p_upt_fq = 1000.0;
@@ -504,6 +511,7 @@ void* p_update() {
     u64 last_imu_mc =  now_mc;
     u64 last_c_mc =    now_mc;
     u64 last_gnss_mc = now_mc;
+    u64 last_mag_mc =  now_mc;
 
     while (true) {
         u64 now_mc = get_micros();
@@ -530,14 +538,17 @@ void* p_update() {
             //printf("%lf\n", ctr_intr.dbg.acc_z);
 
             p_vec3 obj_angles = p_quat_to_euler(&obj.ori);
-            cb_push(&val1_cb, obj.rot.y);
-            cb_push(&val2_cb, ctr_intr.dbg.rot_y);
+            cb_push(&val1_cb, obj.pos.x);
+            cb_push(&val2_cb, ctr_intr.dbg.pos_x);
 
             //printf("real: %lf, pred: %lf\n", obj_angles.y, ctr_intr.dbg.ori_y);
             //cb_push(&val2_cb, );
         }
         
         // Update IMU
+        // TODO: the way sensors are modelled here is not realistic since they take the immediate
+        // value available, which is not correct. Doing like this, physics rate >> sensor rate we
+        // create a kind of sensor bias
         if (now_mc - last_imu_mc >= imu_udt_mc) {
             last_imu_mc += imu_udt_mc;
             
@@ -565,8 +576,19 @@ void* p_update() {
             
             ctr_intr.pos_x = (i32)((obj.pos.x + (gnss_pos_sdev * rand_gauss())) * 100);
             ctr_intr.pos_y = (i32)((obj.pos.y + (gnss_pos_sdev * rand_gauss())) * 100);
+        }
+        
+        // Update Magnetometer
+        if (now_mc - last_mag_mc >= mag_upt_mc) {
+            last_mag_mc += mag_upt_mc;
+            
+            p_quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
+            p_vec3 mag_field = { .x = 0.215, .y = 0.0, .z = -0.427 };  // TEMP
+            p_vec3 body_mag = p_vec_rotate_quat(&mag_field, &q_inv);
 
-            printf("real: %lf, pred: %lf\n", obj.pos.x, ctr_intr.dbg.pos_x);
+            ctr_intr.mag_x = body_mag.x + (mag_sdev * rand_gauss());
+            ctr_intr.mag_y = body_mag.y + (mag_sdev * rand_gauss());
+            ctr_intr.mag_z = body_mag.z + (mag_sdev * rand_gauss());
         }
 
         // Controller step
@@ -597,12 +619,65 @@ void DrawGraph(
     int width,
     int height,
     CircularBuffer *cb_real,
-    CircularBuffer *cb_tap,
-    f64 maxV,
-    f64 minV
+    CircularBuffer *cb_tap
 ) {
+    #define GRAPH_PADDING 6
+    #define RULER_DIVS_Y 5
+    #define RULER_DIVS_X 10
+
+    // Compute range
+    f64 minV =  1e308;
+    f64 maxV = -1e308;
+
+    f64 out_min = 0.0;
+    f64 out_max = 0.0;
+
+    CircularBuffer *cbs[2] = { cb_real, cb_tap };
+
+    for (int c = 0; c < 2; c++) {
+        CircularBuffer *cb = cbs[c];
+        u64 idx = cb->top;
+
+        for (u64 i = 0; i < CB_CAPACITY; i++) {
+            idx = (idx + 1) % CB_CAPACITY;
+            f64 v = cb->data[idx];
+            if (v < minV) minV = v;
+            if (v > maxV) maxV = v;
+        }
+    }
+
+    if (minV == maxV) {
+        minV -= 1.0;
+        maxV += 1.0;
+    }
+
+    // Padding (10%)
+    f64 pad = (maxV - minV) * 0.1;
+    out_min = minV - pad;
+    out_max = maxV + pad;
+
     DrawRectangle(posX, posY, width, height, BLACK);
-    
+
+    // Y ruler (horizontal lines)
+    for (int i = 0; i <= RULER_DIVS_Y; i++) {
+        float t = (float)i / RULER_DIVS_Y;
+        float yy = posY + height * t;
+
+        DrawLine(posX, yy, posX + width, yy, DARKGRAY);
+
+        f64 value = maxV - t * (maxV - minV);
+        DrawText(TextFormat("%.2f", value),
+                 posX + 4, yy - 10, 10, GRAY);
+    }
+
+    // X ruler (vertical lines)
+    for (int i = 0; i <= RULER_DIVS_X; i++) {
+        float t = (float)i / RULER_DIVS_X;
+        float xx = posX + width * t;
+
+        DrawLine(xx, posY, xx, posY + height, DARKGRAY);
+    } 
+
     for (u64 b=0; b<2; b++) {
         CircularBuffer *cb = b==0 ? cb_real : cb_tap;
         
@@ -614,12 +689,8 @@ void DrawGraph(
             f64 value = cb->data[cb_idx];
 
             // Map from (posY + height, posY) and (minV, maxV)
-            float x = (f64)width / CB_CAPACITY * i;
-
-            // clamp value
-            if (value > maxV) value = maxV;
-            if (value < minV) value = minV;
-            float y = height / (maxV - minV) * -value + posY + height / 2;
+            float x = posX + (float)i / (CB_CAPACITY - 1) * width;
+            float y = posY + (1.0f - (value - minV) / (maxV - minV)) * height;
 
             points[i] = (Vector2) {
                 .x = x,
@@ -629,6 +700,16 @@ void DrawGraph(
 
         DrawLineStrip(points, CB_CAPACITY, b==0 ? RED : WHITE);
     }
+
+    const i32 text_size = 24;
+    
+    char ch1_text[64] = {0};
+    sprintf(ch1_text, "r: %5.2lf", cb_real->data[cb_real->top]);
+    DrawText(ch1_text, posX + 10.0, posY, text_size, RED);
+    
+    char ch2_text[64] = {0};
+    sprintf(ch2_text, "t: %5.2lf", cb_tap->data[cb_tap->top]);
+    DrawText(ch2_text, posX + 120.0, posY, text_size, WHITE);
 }
 
 Color viewport_bg_col = (Color){ 30, 30, 30, 255 };
@@ -836,7 +917,7 @@ int main(void) {
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, cur_y, panel_size, graph_height, &val1_cb, &val2_cb, 2.0, -2.0);
+            DrawGraph(0, cur_y, panel_size, graph_height, &val1_cb, &val2_cb);
 
             cur_y += graph_height;
             if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=panel_size, .height=text_size  }, "Perturbe")) {

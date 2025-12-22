@@ -25,8 +25,8 @@ typedef struct {
     f64 rot_x_rdng; // rot/s
     f64 rot_y_rdng; // rot/s
     f64 rot_z_rdng; // rot/s
-    f64 pos_x_rdng;
-    f64 pos_y_rdng;
+    f64 pos_x_rdng; // m
+    f64 pos_y_rdng; // m
 
     // PIDs
     f64 pid_out_vel;
@@ -43,6 +43,9 @@ typedef struct {
     i16 imu_rot_z;
     i32 pos_x;  // cm
     i32 pos_y;  // cm
+    f64 mag_x;
+    f64 mag_y;
+    f64 mag_z;
 
     // Controller Outputs
     f64 rot_cmd[4]; // [0, 1]

@@ -40,6 +40,11 @@ f64 imu_gyro_to_rad(i16 raw_gyro) {
     return ((f64)raw_gyro / (f64)INT16_MAX) * imu_rot_max_value; 
 }
 
+// Magnetometer
+const f64 mag_fq = 100.0; // Make sure it's divisible by CONTROL_FQ
+const u64 mag_loops = CONTROL_FQ / mag_fq;
+const f64 mag_dt = 1.0 / mag_fq;
+
 // This should only be touched by the pid function
 typedef struct {
     f64 i_err;
@@ -89,31 +94,45 @@ PIDState mot_pid_s = {0};
 PIDParams alt_pid_p = {
     .p = 2.0,
     .i = 0.0,
-    .d = 0.0,
+    .d = 0.5,
     .dt = c_dt,
     .high = 1.0,
     .low = -1.0
 };
 PIDState alt_pid_s = {0};
 
+// pos -> vel
 PIDParams pos_pid_p = {
-    .p = 1.0,
+    .p = 0.1,
     .i = 0.0,
-    .d = 0.5,
+    .d = 0.1,
     .dt = c_dt,
-    .high = 0.2,
-    .low = -0.2
+    .high = 0.05,    // m/s
+    .low = -0.05     // m/s
 };
 PIDState pos_x_pid_s = {0};
 PIDState pos_y_pid_s = {0};
 
+// vel -> ori
+PIDParams vel_pid_p = {
+    .p = 0.1,
+    .i = 0.0,
+    .d = 0.0,
+    .dt = c_dt,
+    .high = 0.2,    // rad
+    .low = -0.2     // rad
+};
+PIDState vel_x_pid_s = {0};
+PIDState vel_y_pid_s = {0};
+
+// ori -> rot
 PIDParams ori_pid_p = {
     .p = 1.0,
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
-    .high = 0.2,
-    .low = -0.2
+    .high = 0.2,    // rad/s
+    .low = -0.2     // rad/s
 };
 PIDState ori_x_pid_s = {0};
 PIDState ori_y_pid_s = {0};
@@ -306,6 +325,38 @@ Mat mat_inv(Mat *M) {
     return M_inv;
 }
 
+Mat rotate_vec3_euler_angles(Mat *vec3, f64 alpha, f64 beta, f64 gamma) {
+    // https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
+    // https://en.wikipedia.org/wiki/Rotation_matrix#Basic_3D_rotations
+    
+    assert(vec3->r == 3 && vec3->c == 1);
+    
+    Mat rot_mat_x = { .r=3, .c=3, {
+        1.0, 0.0,        0.0,
+        0.0, cos(alpha), -sin(alpha),
+        0.0, sin(alpha), cos(alpha)
+    }};
+    
+    Mat rot_mat_y = { .r=3, .c=3, {
+        cos(beta),  0.0, sin(beta),
+        0.0,        1.0, 0.0,
+        -sin(beta), 0.0, cos(beta)
+    }};
+    
+    Mat rot_mat_z = { .r=3, .c=3, {
+        cos(gamma), -sin(gamma), 0.0,
+        sin(gamma), cos(gamma),  0.0,
+        0.0,        0.0,         1.0 
+    }};
+
+    Mat rot_mat_zy = mat_mul(&rot_mat_z, &rot_mat_y);
+    Mat rot_mat    = mat_mul(&rot_mat_zy, &rot_mat_x);
+    
+    Mat v_rot = mat_mul(&rot_mat, vec3);
+
+    return v_rot;
+}
+
 // TODO: move to Z down convetion so ori -> acc is sign consistent
 
 enum {
@@ -352,7 +403,7 @@ void c_init() {
     
     SET_XYZ(P, S_POS_X, S_POS_X, 1e2);
     
-    SET_XYZ(Q, S_POS_X, S_POS_X, 1e-3);
+    SET_XYZ(Q, S_POS_X, S_POS_X, 0.5);
 
     // vel
     SET_XYZ(F, S_VEL_X, S_VEL_X, 1.0);
@@ -360,14 +411,14 @@ void c_init() {
     
     SET_XYZ(P, S_VEL_X, S_VEL_X, 1e-2);
     
-    SET_XYZ(Q, S_VEL_X, S_VEL_X, 1e-2);
+    SET_XYZ(Q, S_VEL_X, S_VEL_X, 1.0);
     
     // acc
     SET_XYZ(F, S_ACC_X, S_ACC_X, 1.0);
     
     SET_XYZ(P, S_ACC_X, S_ACC_X, 1e-2);
     
-    SET_XYZ(Q, S_ACC_X, S_ACC_X, 1e-1);
+    SET_XYZ(Q, S_ACC_X, S_ACC_X, 5.0);
 
     // ori
     SET_XYZ(F, S_ORI_X, S_ORI_X, 1.0);
@@ -387,7 +438,7 @@ void c_init() {
     mat_print(&F);
 }
 
-Mat P_pred = {0};   // TODO: is this really needed?
+//Mat P_pred = {0};   // TODO: is this really needed?
 
 void kf_predict(
     Mat *B, // Control transition matrix
@@ -402,9 +453,9 @@ void kf_predict(
     // Predict state covariance
     // P(n+1) = F*P(n)*F_t + Q
     Mat F_t = mat_trans(&F);
-    P_pred = mat_mul(&F, &P);
-    P_pred = mat_mul(&P_pred, &F_t);
-    P = mat_sum(&P_pred, &Q);
+    P = mat_mul(&F, &P);
+    P = mat_mul(&P, &F_t);
+    P = mat_sum(&P, &Q);
 }
 
 void kf_correct(
@@ -423,7 +474,7 @@ void kf_correct(
     // Compute innovation covariance
     // S = H * P_pred * H_t + R
     Mat H_t = mat_trans(H);
-    Mat HP = mat_mul(H, &P_pred);
+    Mat HP = mat_mul(H, &P);
     Mat S = mat_mul(&HP, &H_t);
 
     S = mat_sum(&S, R);
@@ -432,7 +483,7 @@ void kf_correct(
 
     // Compute Kalman gain
     // K = P_pred*H_t*S^-1
-    Mat K = mat_mul(&P_pred, &H_t);
+    Mat K = mat_mul(&P, &H_t);
     K = mat_mul(&K, &S_inv);
     
     // Update state
@@ -445,12 +496,13 @@ void kf_correct(
     Mat KH = mat_mul(&K, H);   // Map Kalman Gain from measurement domain to state domain
     Mat Id = mat_identity(KH.r);
     Mat IdminKH = mat_sub(&Id, &KH);
-    P = mat_mul(&IdminKH, &P_pred);
+    P = mat_mul(&IdminKH, &P);
 }
 
 u64 bar_l = 0;
 u64 imu_l = 0;
 u64 gnss_l = 0;
+u64 mag_l = 0;
 
 // Assume that the control_step() function is triggered by an interrupt
 // in the MCU every 1ms (1000Hz)
@@ -458,6 +510,7 @@ void c_step(ControllerInterface *intr) {
     bar_l++;
     imu_l++;
     gnss_l++;
+    mag_l++;
     
     Mat B = { .r=S_STATE_DIM, .c=1 };
     Mat U = { .r=1, .c=1 };
@@ -508,41 +561,17 @@ void c_step(ControllerInterface *intr) {
         //printf("acc_x=%lf, acc_y=%lf, acc_z=%lf\n", ax, ay, az);
 
         // World-frame accelerations
-        // https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
-        // https://en.wikipedia.org/wiki/Rotation_matrix#Basic_3D_rotations
-        
-        f64 alpha = X.data[S_ORI_X];
-        f64 beta  = X.data[S_ORI_Y];
-        f64 gamma = X.data[S_ORI_Z];
-        
-        Mat rot_mat_x = { .r=3, .c=3, {
-            1.0, 0.0,        0.0,
-            0.0, cos(alpha), -sin(alpha),
-            0.0, sin(alpha), cos(alpha)
-        }};
-        
-        Mat rot_mat_y = { .r=3, .c=3, {
-            cos(beta),  0.0, sin(beta),
-            0.0,        1.0, 0.0,
-            -sin(beta), 0.0, cos(beta)
-        }};
-        
-        Mat rot_mat_z = { .r=3, .c=3, {
-            cos(gamma), -sin(gamma), 0.0,
-            sin(gamma), cos(gamma),  0.0,
-            0.0,        0.0,         1.0 
-        }};
-
-        Mat rot_mat_zy = mat_mul(&rot_mat_z, &rot_mat_y);
-        Mat rot_mat    = mat_mul(&rot_mat_zy, &rot_mat_x);
-        
         Mat imu_body_acc = { .r=3, .c=1, {
             ax,
             ay,
             az
         }};
+        
+        f64 alpha = X.data[S_ORI_X];
+        f64 beta  = X.data[S_ORI_Y];
+        f64 gamma = X.data[S_ORI_Z];
 
-        Mat imu_world_acc = mat_mul(&rot_mat, &imu_body_acc);
+        Mat imu_world_acc = rotate_vec3_euler_angles(&imu_body_acc, alpha, beta, gamma);
         imu_world_acc.data[2] += g;
 
         f64 gx = imu_gyro_to_rad(intr->imu_rot_x); 
@@ -585,6 +614,7 @@ void c_step(ControllerInterface *intr) {
         
         kf_correct(&Z, &H, &R);
     }
+    
     // --- GNSS ---
     if (gnss_l >= gnss_loops) {
         gnss_l=0;
@@ -602,10 +632,11 @@ void c_step(ControllerInterface *intr) {
             pos_y 
         }};
 
-        const f64 gnss_pos_sdev = 2.5*2.5;   // m^2
+        const f64 gnss_pos_sdev = 1e2; //2.5; // m
+        const f64 gnss_pos_var = gnss_pos_sdev * gnss_pos_sdev;   // m^2
         Mat R = { .r=Z.r, .c=Z.r, { 
-            gnss_pos_sdev, 0.0,
-            0.0, gnss_pos_sdev
+            gnss_pos_var, 0.0,
+            0.0, gnss_pos_var
         }};
 
         Mat H = { .r=Z.r, .c=S_STATE_DIM };
@@ -615,6 +646,40 @@ void c_step(ControllerInterface *intr) {
         kf_correct(&Z, &H, &R);
     }
 
+    // --- Magnetometer ---
+    if (mag_l >= mag_loops) {
+        mag_l=0;
+
+        f64 alpha = X.data[S_ORI_X];
+        f64 beta  = X.data[S_ORI_Y];
+        f64 gamma = X.data[S_ORI_Z];
+
+        Mat body_mag = { .r=3, .c=1, {
+            intr->mag_x,
+            intr->mag_y,
+            intr->mag_z
+        }};
+
+        Mat world_mag = rotate_vec3_euler_angles(&body_mag, alpha, beta, gamma);
+
+        f64 heading = atan2(-intr->mag_y, intr->mag_x);
+        //heading = fmod(heading + PI, 2*PI) - PI;
+        
+        Mat Z = { .r=1, .c=1, {
+            heading,
+        }};
+
+        const f64 mag_sdev = 1e-2;
+        const f64 mag_var = mag_sdev * mag_sdev;
+        Mat R = { .r=Z.r, .c=Z.r, { 
+            mag_var,
+        }};
+
+        Mat H = { .r=Z.r, .c=S_STATE_DIM };
+        MAT_AT(H, 0, S_ORI_Z) = 1.0;
+
+        kf_correct(&Z, &H, &R);
+    }
 
     // --- Attitude Control --- 
     
@@ -624,32 +689,40 @@ void c_step(ControllerInterface *intr) {
     const f64 hover_cmd = 0.3;
     f64 out_cmd = hover_cmd + pid_step(X.data[S_VEL_Z], tgt_vel, &mot_pid_p, &mot_pid_s);
 
-    // pos -> ori
-    f64 ori_x_tgt = pid_step(X.data[S_POS_Y], 0.0, &pos_pid_p, &pos_x_pid_s);
-    f64 ori_y_tgt = pid_step(X.data[S_POS_X], 0.0, &pos_pid_p, &pos_y_pid_s);
+    // pos -> vel
+    f64 vel_x_tgt = pid_step(X.data[S_POS_X], 0.0, &pos_pid_p, &pos_x_pid_s);
+    f64 vel_y_tgt = pid_step(X.data[S_POS_Y], 0.0, &pos_pid_p, &pos_y_pid_s);
+
+    //printf("vx: %lf\n", vel_x_tgt);
+
+    // vel -> ori
+    f64 ori_x_tgt = pid_step(X.data[S_VEL_Y], vel_y_tgt, &vel_pid_p, &vel_x_pid_s);
+    f64 ori_y_tgt = pid_step(X.data[S_VEL_X], vel_x_tgt, &vel_pid_p, &vel_y_pid_s);
 
     // ori -> rot
     f64 rot_x_tgt = pid_step(X.data[S_ORI_X], -ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
-    f64 rot_y_tgt = pid_step(X.data[S_ORI_Y], ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
+    f64 rot_y_tgt = pid_step(X.data[S_ORI_Y],  ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
+    f64 rot_z_tgt = pid_step(X.data[S_ORI_Z],  0.0,       &ori_pid_p, &ori_y_pid_s);
     
-    printf(
-        "pos_y: %lf, tgt_ori_x: %lf, ori_x: %lf, tgt_rot_x: %lf\n",
-        X.data[S_POS_Y],
-        ori_x_tgt,
-        X.data[S_ORI_X],
-        rot_x_tgt
-    );
+    //printf(
+    //    "pos_y: %lf, tgt_ori_x: %lf, ori_x: %lf, tgt_rot_x: %lf\n",
+    //    X.data[S_POS_Y],
+    //    ori_x_tgt,
+    //    X.data[S_ORI_X],
+    //    rot_x_tgt
+    //);
 
     // rot -> cmd
     f64 out_x_cmd = pid_step(X.data[S_ROT_X], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
     f64 out_y_cmd = pid_step(X.data[S_ROT_Y], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
+    f64 out_z_cmd = pid_step(X.data[S_ROT_Z], rot_z_tgt, &rot_pid_p, &rot_y_pid_s);
     
     // --- Motor mixer ---
     // fl > fr > rr > rl
-    intr->rot_cmd[0] = out_cmd - out_x_cmd - out_y_cmd;
-    intr->rot_cmd[1] = out_cmd + out_x_cmd - out_y_cmd;
-    intr->rot_cmd[2] = out_cmd + out_x_cmd + out_y_cmd;
-    intr->rot_cmd[3] = out_cmd - out_x_cmd + out_y_cmd;
+    intr->rot_cmd[0] = out_cmd - out_x_cmd - out_y_cmd + out_z_cmd;
+    intr->rot_cmd[1] = out_cmd + out_x_cmd - out_y_cmd - out_z_cmd;
+    intr->rot_cmd[2] = out_cmd + out_x_cmd + out_y_cmd + out_z_cmd;
+    intr->rot_cmd[3] = out_cmd - out_x_cmd + out_y_cmd - out_z_cmd;
 
 #ifdef CONTROL_DEBUG
     intr->dbg.pos_x = X.data[S_POS_X];
