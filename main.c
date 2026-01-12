@@ -15,14 +15,16 @@
 #include <raygui.h>
 #include "rlgl.h"
 
+#include <math/geom.h>
+
+// Model
+#include "model.h"
+
 #include "control/control.h"
+#include "consts.h"
 
 #define CAM_MIN_RADIUS 0.5
 #define CAM_SCROLL_SPEED 1.0
-
-#ifndef M_PI
-#    define M_PI 3.14159265358979323846
-#endif
 
 // App state
 float c_radius = 15.0f;
@@ -35,24 +37,46 @@ ControllerInterface ctr_intr = {0};
 f64 rand_gauss() {
     f64 u1 = (rand() + 1.0) / (RAND_MAX + 1.0);
     f64 u2 = (rand() + 1.0) / (RAND_MAX + 1.0);
-    return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2);
 }
 
-// The physics world assumes Z up
-typedef struct {
-    f64 x;
-    f64 y;
-    f64 z;
-} p_vec3;
+vec3 vec3_enu_to_ned(vec3 *enu) {
+    return (vec3) {
+        .x =  enu->y,    // East -> North
+        .y =  enu->x,    // North -> East
+        .z = -enu->z     // Up -> Down
+    };
+}
 
-typedef struct {
-    f64 r;
-    f64 i;
-    f64 j;
-    f64 k;
-} p_quat;
+vec3 vec3_ned_to_enu(vec3 *ned) {
+    return (vec3) {
+        .x =  ned->y,    // East -> North
+        .y =  ned->x,    // North -> East
+        .z = -ned->z     // Down -> Up
+    };
+}
 
-void p_quat_to_mtx4(float mtx[16], p_quat q) {
+quat quat_enu_to_ned(quat *enu) {
+    quat enu_to_ned_quat = {
+        .r = 0.0,
+        .i = sqrt(2)/2,
+        .j = sqrt(2)/2,
+        .k = 0.0
+    };
+    return quat_mul(&enu_to_ned_quat, enu);
+}
+
+quat quat_ned_to_enu(quat *ned) {
+    quat ned_to_enu_quat = {
+        .r = 0.0,
+        .i = -sqrt(2)/2,
+        .j = -sqrt(2)/2,
+        .k = 0.0
+    };
+    return quat_mul(&ned_to_enu_quat, ned);
+}
+
+void quat_to_mtx4(float mtx[16], quat q) {
     float r = (float)q.r;
     float i = (float)q.i;
     float j = (float)q.j;
@@ -79,130 +103,6 @@ void p_quat_to_mtx4(float mtx[16], p_quat q) {
     mtx[15] = 1;
 }
 
-void p_set_quat_to_axis_angle(p_quat *quat, p_vec3 *axis, f64 angle_rad) {
-    quat->r = cosf(angle_rad / 2.0f);
-    quat->i = axis->x * sinf(angle_rad / 2.0f);
-    quat->j = axis->y * sinf(angle_rad / 2.0f);
-    quat->k = axis->z * sinf(angle_rad / 2.0f);
-}
-
-p_quat p_quat_mul(p_quat *q1, p_quat *q2) {
-    p_quat q;
-    q.r = q1->r * q2->r - q1->i * q2->i - q1->j * q2->j - q1->k * q2->k;
-    q.i = q1->r * q2->i + q1->i * q2->r + q1->j * q2->k - q1->k * q2->j;
-    q.j = q1->r * q2->j - q1->i * q2->k + q1->j * q2->r + q1->k * q2->i;
-    q.k = q1->r * q2->k + q1->i * q2->j - q1->j * q2->i + q1->k * q2->r;
-
-    return q;
-}
-
-void p_quat_norm(p_quat *q) {
-    f64 norm = sqrt(
-        q->r*q->r + \
-        q->i*q->i + \
-        q->j*q->j + \
-        q->k*q->k \
-    );
-
-    q->r /= norm;
-    q->i /= norm;
-    q->j /= norm;
-    q->k /= norm;
-}
-
-p_vec3 p_vec_rotate_quat(p_vec3 *v, p_quat *q) {
-    // v_r = q * v * q^-1
-
-    p_quat q_inv = { q->r, -q->i, -q->j, -q->k };
-
-    p_quat vq = { 0.0, v->x, v->y, v->z };
-
-    p_quat qv  = p_quat_mul(q, &vq);
-    p_quat qvq = p_quat_mul(&qv, &q_inv);
-
-    p_vec3 result = { qvq.i, qvq.j, qvq.k };
-    return result;
-}
-
-p_vec3 p_quat_to_euler(p_quat *q) {
-    // source: https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
-
-    p_vec3 angles = {0};
-
-    // roll (x-axis rotation)
-    f64 sinr_cosp = 2 * (q->r * q->i + q->j * q->k);
-    f64 cosr_cosp = 1 - 2 * (q->i * q->i + q->j * q->j);
-    angles.x = atan2(sinr_cosp, cosr_cosp);
-
-    // pitch (y-axis rotation)
-    f64 sinp = sqrt(1 + 2 * (q->r * q->j - q->i * q->k));
-    f64 cosp = sqrt(1 - 2 * (q->r * q->j - q->i * q->k));
-    angles.y = 2 * atan2(sinp, cosp) - M_PI / 2;
-
-    // yaw (z-axis rotation)
-    f64 siny_cosp = 2 * (q->r * q->k + q->i * q->j);
-    f64 cosy_cosp = 1 - 2 * (q->j * q->j + q->k * q->k);
-    angles.z = atan2(siny_cosp, cosy_cosp);
-
-    return angles;
-}
-
-p_vec3 p_vec_sum(p_vec3 *v1, p_vec3 *v2) {
-    return (p_vec3) {
-        .x = v1->x + v2->x,
-        .y = v1->y + v2->y,
-        .z = v1->z + v2->z
-    };
-}
-
-p_vec3 p_vec_sub(p_vec3 *v1, p_vec3 *v2) {
-    return (p_vec3) {
-        .x = v1->x - v2->x,
-        .y = v1->y - v2->y,
-        .z = v1->z - v2->z
-    };
-}
-
-p_vec3 p_vec_dot(p_vec3 *v1, p_vec3 *v2) {
-    return (p_vec3) {
-        .x = v1->x * v2->x,
-        .y = v1->y * v2->y,
-        .z = v1->z * v2->z
-    };
-}
-
-p_vec3 p_vec_cross(p_vec3 *v1, p_vec3 *v2) {
-    return (p_vec3) {
-        .x = v1->y * v2->z - v1->z * v2->y,
-        .y = v1->z * v2->x - v1->x * v2->z,
-        .z = v1->x * v2->y - v1->y * v2->x
-    };
-}
-
-p_vec3 p_vec_scale(p_vec3 *v, f64 f) {
-    return (p_vec3) {
-        .x = v->x * f,
-        .y = v->y * f,
-        .z = v->z * f
-    };
-}
-
-p_vec3 p_vec_div(p_vec3 *v1, p_vec3 *v2) {
-    return (p_vec3) {
-        .x = (v2->x != 0.0) ? v1->x / v2->x : 0.0,
-        .y = (v2->y != 0.0) ? v1->y / v2->y : 0.0,
-        .z = (v2->z != 0.0) ? v1->z / v2->z : 0.0
-    };
-}
-
-p_vec3 p_vec_abs(p_vec3 *v) {
-    return (p_vec3) {
-        .x = fabs(v->x),
-        .y = fabs(v->y),
-        .z = fabs(v->z)
-    };
-}
-
 // Using ISA troposphere model (<= 11km)
 // reference: https://www.grc.nasa.gov/www/k-12/airplane/atmosmet.html
 
@@ -215,55 +115,35 @@ f64 pressure(f64 alt_m) {
     return p0 * pow((t + 273.1) / 288.08, 5.2561);
 }
 
-typedef struct {
-    p_vec3 pos;     // m
-    p_vec3 vel;     // m/s
-    p_vec3 acc;     // m/s^2
-
-    p_quat ori;     // Orientation (quaternion)
-                    // Quaternion are prefered in order to avoid gimbal lock
-                    // It is similar to axis-angle representation
-    p_vec3 rot;     // rad/s
-    
-    f64 mass;    // Kg
-    p_vec3 inertia; // Kg*m^2. It assumes a symmetric body
-} p_rigid_body;
 
 // Physics world
-const f64 g = 9.81; // m/s^2
 const f64 air_rho = 1.293; // Density of pure, dry air at a temperature of 273 K
                               // and a pressure of 101.325 kPa.
-p_vec3 wind = { 0.5, 0.1, 0.0 }; // Uniform wind (m/s^2)
+vec3 wind = { 0.0, 0.0, 0.0 }; // Uniform wind (m/s^2)
 
-// Quadcopter
-// Reference: https://github.com/PX4/PX4-gazebo-models/tree/6cfb3e362e1424caccb7363dca7e63484e44d188/models/x500_base
-// https://ieeexplore.ieee.org/document/6289431
-#define NUM_ARMS 4
+typedef struct {
+    vec3 pos;     // m
+    vec3 vel;     // m/s
+    vec3 acc;     // m/s^2
 
-const f64 kf =        1e-2; // Thrust coefficient (N / (rad/s)^2)
-const f64 km =        1e-4; // Propeller drag coefficient (N / (rad/s)^2)
-const f64 arm_l =     0.2;  // Arm length (m)
-const f64 tau_m =     0.05; // Motor time constant (s)
-const f64 rot_max_w = 50.0; // Max rotor rotation speed (rad/s)
+    quat ori;
+    vec3 rot;     // rad/s
+    
+    f64 mass;     // Kg
+    vec3 inertia; // Kg*m^2. It assumes a symmetric body
+} rigid_body;
 
-const p_vec3 arm_dir[NUM_ARMS] = {
-    {.x =  0.5, .y = -0.5, .z = 0.0 }, // M0
-    {.x =  0.5, .y =  0.5, .z = 0.0 }, // M1
-    {.x = -0.5, .y =  0.5, .z = 0.0 }, // M2
-    {.x = -0.5, .y = -0.5, .z = 0.0 }  // M3
-};
-
-p_rigid_body obj = {
+rigid_body obj = {
     .pos = { 0.0, 0.0, 0.5},
     .vel = { 0.0, 0.0, 0.0},
     .acc = { 0.0, 0.0, 0.0},
-    .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
+    .ori = { 1.0, 0.1, 0.0, 0.0},   // (this should be normalized to 1)
     .rot = { 0.0, 0.0, 0.0},
     .mass = 2.0,
     .inertia = { 0.2, 0.2, 0.4 }
 };
 
-f64 rot_w[NUM_ARMS] = {0};
+f64 rot_w[NUM_ROT] = {0};
 
 u64 get_micros() {
     struct timespec ts;
@@ -294,26 +174,10 @@ void p_step() {
     // Compute motors thrust
     // TODO: Add ground effect
     // TODO: Consider using RK4 integrator
-    //
-    //         ^
-    //       x |
-    //    
-    //    cw        ccw
-    //    ->        <-
-    //    M0        M1
-    //       \    /
-    //        \  /        y
-    //         ||         ->
-    //        /  \ 
-    //       /    \ 
-    //    M3        M2
-    //    ->        <-
-    //    ccw       cw
-    
     
     // Convert controller command to motor rotation
-    f64 cmd_rot_w[4] = {0};
-    for (u64 i=0;i<4;i++) {
+    f64 cmd_rot_w[NUM_ROT] = {0};
+    for (u64 i=0;i<NUM_ROT;i++) {
         f64 cmd = ctr_intr.rot_cmd[i];
 
         // Clamp command
@@ -325,13 +189,13 @@ void p_step() {
 
     // Let's model the motor rotation as a first order system:
     // rot_w(t) = rot_w(t-1) + (cmd_rot - rot_w(t-1)) * (dt / tau_m)
-    for (u64 i=0; i<4; i++) {
+    for (u64 i=0; i<NUM_ROT; i++) {
         rot_w[i] += (cmd_rot_w[i] - rot_w[i]) * (p_dt / tau_m);
     }
 
     // For now we assume ideal thrust model: f = kf * rot_w^2
-    p_vec3 mot_f[4] = {0};
-    for (u64 i=0; i<4; i++) {
+    vec3 mot_f[NUM_ROT] = {0};
+    for (u64 i=0; i<NUM_ROT; i++) {
         mot_f[i].z = kf * rot_w[i] * rot_w[i];
     }
 
@@ -339,18 +203,18 @@ void p_step() {
     //    //printf("M0: %lf, M1: %lf, M2: %lf, M3: %lf\n", mot_f[0].z, mot_f[1].z, mot_f[2].z, mot_f[3].z);
     //}
 
-    p_vec3 tot_mot_f = { 0.0, 0.0, 0.0 };
-    for (u64 i=0; i<4; i++) {
-        tot_mot_f = p_vec_sum(&tot_mot_f, &mot_f[i]);
+    vec3 tot_mot_f = { 0.0, 0.0, 0.0 };
+    for (u64 i=0; i<NUM_ROT; i++) {
+        tot_mot_f = vec3_sum(&tot_mot_f, &mot_f[i]);
     }
 
     // Rotate the thrust to the object orientation
-    p_vec3 tot_f = p_vec_rotate_quat(&tot_mot_f, &obj.ori);
-    obj.acc = p_vec_scale(&tot_f, 1.0/obj.mass);
-    obj.acc.z -= g;
+    vec3 tot_f = vec3_rotate_quat(&tot_mot_f, &obj.ori);
+    obj.acc = vec3_scale(&tot_f, 1.0/obj.mass);
+    obj.acc.z -= G;
     
     // Compute wind
-    // TODO: Use p_vec3 drag coefficient: the drag changes based on where the wind
+    // TODO: Use vec33 drag coefficient: the drag changes based on where the wind
     // hits the drone
     // TODO: Add gusts
 
@@ -362,52 +226,48 @@ void p_step() {
     const f64 Cd = 1.0;
     const f64 Axy = 0.05;
 
-    p_vec3 rel_vel = p_vec_sub(&obj.vel, &wind);
-    p_vec3 abs_vel = p_vec_abs(&rel_vel);
-    p_vec3 rel_vel_sign_sq = p_vec_dot(&abs_vel, &rel_vel);
+    vec3 rel_vel = vec3_sub(&obj.vel, &wind);
+    vec3 abs_vel = vec3_abs(&rel_vel);
+    vec3 rel_vel_sign_sq = vec3_dot(&abs_vel, &rel_vel);
 
-    p_vec3 drag = p_vec_scale(&rel_vel_sign_sq, -0.5*air_rho*Cd*Axy);
-    p_vec3 wind_acc = p_vec_scale(&drag, 1.0/obj.mass);
+    vec3 drag = vec3_scale(&rel_vel_sign_sq, -0.5*air_rho*Cd*Axy);
+    vec3 wind_acc = vec3_scale(&drag, 1.0/obj.mass);
 
     //printf("x=%lf, y=%lf, z=%lf\n", wind_acc.x, wind_acc.y, wind_acc.z);
 
-    // FIX: this causes acceleration to explode
-    obj.acc = p_vec_sum(&obj.acc, &wind_acc);
+    obj.acc = vec3_sum(&obj.acc, &wind_acc);
 
     // Linear integrator
     // v = v_0 + a*dt
     // x = x_0 + v*dt
-    p_vec3 d_vel = p_vec_scale(&obj.acc, p_dt);
-    obj.vel = p_vec_sum(&obj.vel, &d_vel);
-    p_vec3 d_pos = p_vec_scale(&obj.vel, p_dt);
-    obj.pos = p_vec_sum(&obj.pos, &d_pos);
+    vec3 d_vel = vec3_scale(&obj.acc, p_dt);
+    obj.vel = vec3_sum(&obj.vel, &d_vel);
+    vec3 d_pos = vec3_scale(&obj.vel, p_dt);
+    obj.pos = vec3_sum(&obj.pos, &d_pos);
 
     // Torque
     // torque = r x F (Nm = Kg*m^2/s^2)
-    
 
     // Motor torque (pitch, roll)
-    p_vec3 mot_trq[4] = {0};
-    for (u64 i=0; i<4; i++) {
-        p_vec3 arm = p_vec_scale(&arm_dir[i], arm_l);
-        mot_trq[i] = p_vec_cross(&arm, &mot_f[i]);
+    vec3 mot_trq[NUM_ROT] = {0};
+    for (u64 i=0; i<NUM_ROT; i++) {
+        vec3 arm = vec3_scale(&arm_dir[i], arm_l);
+        mot_trq[i] = vec3_cross(&arm, &mot_f[i]);
     }
 
-    p_vec3 motor_trq = {0};
-    for (u64 i=0; i<4; i++) {
-        motor_trq = p_vec_sum(&motor_trq, &mot_trq[i]);
+    vec3 motor_trq = {0};
+    for (u64 i=0; i<NUM_ROT; i++) {
+        motor_trq = vec3_sum(&motor_trq, &mot_trq[i]);
     }
 
     // Propeller drag torque (yaw)
     // Assuming propellers points precisely straight up (+Z)
-    p_vec3 prop_drag_trq = {0};
-    prop_drag_trq.z = 
-          (km * rot_w[0]*rot_w[0])
-        - (km * rot_w[1]*rot_w[1])
-        + (km * rot_w[2]*rot_w[2])
-        - (km * rot_w[3]*rot_w[3]);
+    vec3 prop_drag_trq = {0};
+    for (u64 i=0; i<NUM_ROT; i++) {
+        prop_drag_trq.z += rot_cw[i] * km * rot_w[i]*rot_w[i];
+    }
 
-    p_vec3 tot_trq = p_vec_sum(&motor_trq, &prop_drag_trq);
+    vec3 tot_trq = vec3_sum(&motor_trq, &prop_drag_trq);
     // The change in angular velocity depends on two things:
     //     we have torque (rather than force),
     //     and the moment of inertia (rather than mass)
@@ -416,15 +276,15 @@ void p_step() {
     
     // ang_acc = torque / inertia
     // Kg*m^2/s^2 / Kg*m^2 = 1/s^2 = rad/s^2
-    p_vec3 obj_ang_acc = p_vec_div(&tot_trq, &obj.inertia); 
+    vec3 obj_ang_acc = vec3_div(&tot_trq, &obj.inertia); 
 
     // rot += ang_acc * dt
-    p_vec3 d_rot = p_vec_scale(&obj_ang_acc, p_dt);
-    obj.rot = p_vec_sum(&obj.rot, &d_rot);
+    vec3 d_rot = vec3_scale(&obj_ang_acc, p_dt);
+    obj.rot = vec3_sum(&obj.rot, &d_rot);
     
     // Rotational integrator
-    p_quat wq = { 0.0, obj.rot.x, obj.rot.y, obj.rot.z };
-    p_quat dq = p_quat_mul(&obj.ori, &wq);
+    quat wq = { 0.0, obj.rot.x, obj.rot.y, obj.rot.z };
+    quat dq = quat_mul(&obj.ori, &wq);
     dq.r *= 1.0/2 * p_dt;
     dq.i *= 1.0/2 * p_dt;
     dq.j *= 1.0/2 * p_dt;
@@ -435,7 +295,7 @@ void p_step() {
     obj.ori.j += dq.j;
     obj.ori.k += dq.k;
 
-    p_quat_norm(&obj.ori);  // Crazy things happens if you don't normalize this
+    quat_norm(&obj.ori);  // Crazy things happens if you don't normalize this
 
     //printf("%lf %lf %lf %lf\n", obj.ori.r, obj.ori.i, obj.ori.j, obj.ori.k);
 }
@@ -456,7 +316,7 @@ const u64 imu_udt_mc = 1.0/imu_upt_fq * 1e6;
 const u64 imu_read_bits = 16;
 
 const f64 imu_acc_sdev = 0.00637;
-const f64 imu_acc_max_value = 8.0*g;     // m/s^2  TO CHECK
+const f64 imu_acc_max_value = 8.0*G;     // m/s^2  TO CHECK
 
 const f64 imu_rot_sdev = 0.05 * DEG2RAD; // rad/s
 const f64 imu_rot_max_value = 250.0;     // rad/s  TO CHECK
@@ -483,6 +343,9 @@ const u64 mag_upt_mc = 1.0/mag_udt_fq * 1e6;
 const f64 p_upt_fq = 1000.0;
 const u64 p_udt_mc = 1.0/p_upt_fq * 1e6;
 f64 p_real_fq = 0.0;
+
+const f64 log_fq = 100.0; // Hz
+const u64 log_upt_mc = 1.0/log_fq * 1e6;
 
 // Controller
 const u64 c_udt_mc = 1.0/CONTROL_FQ * 1e6;
@@ -512,6 +375,7 @@ void* p_update() {
     u64 last_c_mc =    now_mc;
     u64 last_gnss_mc = now_mc;
     u64 last_mag_mc =  now_mc;
+    u64 last_log_mc =  now_mc;
 
     while (true) {
         u64 now_mc = get_micros();
@@ -523,7 +387,6 @@ void* p_update() {
                                     // ex. Suppose that 1002us has passed since last
                                     // physics step, then we would accumulate 2us (drift)
                                     // if we use `now_mc`
-            
             p_step();
 
             p_step_count++;
@@ -534,31 +397,22 @@ void* p_update() {
             last_s_mc += s_udt_mc;
             
             ctr_intr.pressure = (u64)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
-            
-            //printf("%lf\n", ctr_intr.dbg.acc_z);
-
-            p_vec3 obj_angles = p_quat_to_euler(&obj.ori);
-            cb_push(&val1_cb, obj.pos.x);
-            cb_push(&val2_cb, ctr_intr.dbg.pos_x);
-
-            //printf("real: %lf, pred: %lf\n", obj_angles.y, ctr_intr.dbg.ori_y);
-            //cb_push(&val2_cb, );
         }
         
         // Update IMU
         // TODO: the way sensors are modelled here is not realistic since they take the immediate
         // value available, which is not correct. Doing like this, physics rate >> sensor rate we
-        // create a kind of sensor bias
+        // create a kind of sensor random walk
         if (now_mc - last_imu_mc >= imu_udt_mc) {
             last_imu_mc += imu_udt_mc;
             
             // Real accelerometer: body acceleration + gravity
-            p_vec3 imu_w_acc = obj.acc;
-            imu_w_acc.z -= g;
+            vec3 imu_w_acc = obj.acc;
+            imu_w_acc.z -= G;
 
             // Convert world accel to body frame (rotate by inverse quaternion)
-            p_quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
-            p_vec3 imu_b_acc = p_vec_rotate_quat(&imu_w_acc, &q_inv);
+            quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
+            vec3 imu_b_acc = vec3_rotate_quat(&imu_w_acc, &q_inv);
 
             ctr_intr.imu_acc_x = simulate_sensor(imu_b_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
             ctr_intr.imu_acc_y = simulate_sensor(imu_b_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
@@ -582,9 +436,9 @@ void* p_update() {
         if (now_mc - last_mag_mc >= mag_upt_mc) {
             last_mag_mc += mag_upt_mc;
             
-            p_quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
-            p_vec3 mag_field = { .x = 0.215, .y = 0.0, .z = -0.427 };  // TEMP
-            p_vec3 body_mag = p_vec_rotate_quat(&mag_field, &q_inv);
+            quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
+            vec3 mag_field = { .x = 0.215, .y = 0.0, .z = -0.427 };  // TEMP
+            vec3 body_mag = vec3_rotate_quat(&mag_field, &q_inv);
 
             ctr_intr.mag_x = body_mag.x + (mag_sdev * rand_gauss());
             ctr_intr.mag_y = body_mag.y + (mag_sdev * rand_gauss());
@@ -596,6 +450,15 @@ void* p_update() {
             last_c_mc += c_udt_mc;
 
             c_step(&ctr_intr);
+        }
+
+        // Log controller debug
+        if (now_mc - last_log_mc >= log_upt_mc) {
+            last_log_mc += log_upt_mc;
+            
+            vec3 obj_angles = quat_to_euler(&obj.ori);
+            cb_push(&val1_cb, obj.vel.x);
+            cb_push(&val2_cb, ctr_intr.dbg[DBG_VEL_X]);
         }
 
         // Log every 1s
@@ -712,15 +575,64 @@ void DrawGraph(
     DrawText(ch2_text, posX + 120.0, posY, text_size, WHITE);
 }
 
+void DrawAxisTexture(RenderTexture2D rt, Camera3D mainCam) {
+    const f32 radius = 0.1f;
+    const f32 circle_radius = 10.0f;
+    const i32 font_size = 16;
+
+    Vector3 forward = Vector3Normalize(
+        Vector3Subtract(mainCam.target, mainCam.position)
+    );
+
+    Camera3D cam = { 0 };
+    cam.position = Vector3Scale(forward, -5.0f); // pull back
+    cam.target   = (Vector3){ 0, 0, 0 };
+    cam.up       = mainCam.up;
+    cam.fovy     = 45.0f;
+    cam.projection = CAMERA_PERSPECTIVE;
+
+    const float len = 1.5f;
+    Vector3 xEnd = { len, 0, 0 };
+    Vector3 yEnd = { 0, 0, len };
+    Vector3 zEnd = { 0, len, 0 };
+
+    BeginTextureMode(rt);
+        ClearBackground((Color){ 0, 0, 0, 0 });
+        BeginMode3D(cam);
+
+            DrawCylinderEx((Vector3){0,0,0}, xEnd, radius, radius, 8, RED);   // X
+            DrawCylinderEx((Vector3){0,0,0}, yEnd, radius, radius, 8, GREEN); // Y
+            DrawCylinderEx((Vector3){0,0,0}, zEnd, radius, radius, 8, BLUE);  // Z
+
+        EndMode3D();
+
+        // --- Project 3D points to 2D ---
+        Vector2 x2 = GetWorldToScreenEx(xEnd, cam, rt.texture.width, rt.texture.height);
+        Vector2 y2 = GetWorldToScreenEx(yEnd, cam, rt.texture.width, rt.texture.height);
+        Vector2 z2 = GetWorldToScreenEx(zEnd, cam, rt.texture.width, rt.texture.height);
+
+        DrawCircle(x2.x, x2.y, circle_radius, RED);
+        DrawText("X", x2.x - 5, x2.y - 7, font_size, WHITE);
+        
+        DrawCircle(y2.x, y2.y, circle_radius, GREEN);
+        DrawText("Y", y2.x - 5, y2.y - 7, font_size, WHITE);
+        
+        DrawCircle(z2.x, z2.y, circle_radius, BLUE);
+        DrawText("Z", z2.x - 5, z2.y - 7, font_size, WHITE);
+
+    EndTextureMode();
+}
+
 Color viewport_bg_col = (Color){ 30, 30, 30, 255 };
 
 int main(void) {
     i32 win_w = 1920;
     i32 win_h = 1080;
     
-    const int panel_size = 300;
-    const int text_size = 24;
-    const int graph_height = 200;
+    const i32 panel_size = 300;
+    const i32 text_size = 24;
+    const i32 graph_height = 200;
+    const i32 axis_size = 120;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(win_w, win_h, "Awning");
@@ -731,7 +643,8 @@ int main(void) {
     camera.fovy = 45.0f;                                // Camera field-of-view Y
     camera.projection = CAMERA_PERSPECTIVE;             // Camera mode type
 
-    RenderTexture2D target = LoadRenderTexture(win_w - panel_size, win_h);
+    RenderTexture2D viewportRT = LoadRenderTexture(win_w - panel_size, win_h);
+    RenderTexture2D axisRT = LoadRenderTexture(axis_size, axis_size);
 
     SetTargetFPS(60);
     
@@ -746,8 +659,8 @@ int main(void) {
             win_w = new_win_w;
             win_h = new_win_h;
 
-            UnloadRenderTexture(target);
-            target = LoadRenderTexture(win_w - panel_size, win_h);
+            UnloadRenderTexture(viewportRT);
+            viewportRT = LoadRenderTexture(win_w - panel_size, win_h);
         }
 
         if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
@@ -771,21 +684,21 @@ int main(void) {
         camera.position.y = camera.target.y + c_radius * sinf(c_pitch_rad);
         camera.position.z = camera.target.z + c_radius * cosf(c_pitch_rad) * sinf(c_yaw_rad);
         
-        BeginTextureMode(target);
+        BeginTextureMode(viewportRT);
             ClearBackground(viewport_bg_col);
 
             BeginMode3D(camera);
                 rlPushMatrix();
                     rlTranslatef(obj.pos.x, obj.pos.z, obj.pos.y);
 
-                    p_quat rl_obj_rot = {
+                    quat rl_obj_rot = {
                         .r = obj.ori.r,
                         .i = -obj.ori.i,
                         .j = -obj.ori.k,
                         .k = -obj.ori.j
                     };
                     float rot_mtx[16];
-                    p_quat_to_mtx4(rot_mtx, rl_obj_rot);
+                    quat_to_mtx4(rot_mtx, rl_obj_rot);
 
                     rlMultMatrixf(rot_mtx);
 
@@ -810,7 +723,10 @@ int main(void) {
 
                 DrawGrid(10, 1.0f);
             EndMode3D();
+
         EndTextureMode();
+        
+        DrawAxisTexture(axisRT, camera);
         
         u64 cur_y = 0;
         BeginDrawing();
@@ -842,8 +758,8 @@ int main(void) {
             
             i32 panel_center = panel_size / 2;
 
-            for (u64 i=0; i<NUM_ARMS; i++) {
-                p_vec3 arm_d = arm_dir[i];
+            for (u64 i=0; i<NUM_ROT; i++) {
+                vec3 arm_d = arm_dir[i];
                 i32 m_pos_x = panel_center - arm_d.x * panel_center;
                 i32 m_pos_y = cur_y + panel_center - arm_d.y * panel_center;
                 
@@ -893,7 +809,7 @@ int main(void) {
             DrawText(pos_txt, 10, cur_y, text_size, WHITE);
             DrawText("m", 175, cur_y, text_size, WHITE);
             
-            p_vec3 obj_angles = p_quat_to_euler(&obj.ori);
+            vec3 obj_angles = quat_to_euler(&obj.ori);
             cur_y += text_size;
             sprintf(pos_txt, "RX: %8.2lf", obj_angles.x * RAD2DEG);
             DrawText(pos_txt, 10, cur_y, text_size, WHITE);
@@ -927,13 +843,23 @@ int main(void) {
             }
 
             DrawTextureRec(
-                target.texture,
+                viewportRT.texture,
                 (Rectangle){
                     0, 0,
-                    (float)target.texture.width, -(float)target.texture.height },
+                    (float)viewportRT.texture.width, -(float)viewportRT.texture.height },
                 (Vector2){ panel_size, 0 },
                 WHITE
-            );  // Using this command in order to flip the texture y coordinate
+            );
+
+            DrawTextureRec(
+                axisRT.texture,
+                (Rectangle){ 0, 0, axis_size, -axis_size }, // flip Y
+                (Vector2){
+                    GetScreenWidth() - axis_size - 10,
+                    10
+                },
+                WHITE
+            );
 
             //char prs_txt[64];
             //sprintf(prs_txt, "P: %u", ctr_intr.pressure);
@@ -946,7 +872,7 @@ int main(void) {
        // scanf("%c", &wait);
     }
 
-    UnloadRenderTexture(target);
+    UnloadRenderTexture(viewportRT);
     CloseWindow();        // Close window and OpenGL context
 
     return 0;

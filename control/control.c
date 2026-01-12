@@ -5,15 +5,16 @@
 #include <assert.h>
 #include <stdlib.h>
 
-#define PI 3.14159265358979323846
-#define DEG2RAD (PI/180.0f)
+#include <math/mat.h>
+#include <consts.h>
 
 const f64 c_dt = 1.0 / CONTROL_FQ;
 
 // Quadcopter physics
-static const f64 kf = 1e-2;  // Thrust coefficient - N / (rad/s)^2
-static const f64 mass = 2.0; // Kg
-static const f64 g = 9.81;
+static const f64 mass = 2.0;        // Kg
+static const f64 kf = 1e-2;         // Thrust coefficient - N / (rad/s)^2
+static const f64 tau_m = 0.05;      // Motor time constant (s)
+static const f64 rot_max_w = 50.0;  // rad/s 
 
 // Barometer sensor
 const f64 bar_fq = 50.0;  // Make sure it's divisible by CONTROL_FQ
@@ -30,7 +31,7 @@ const f64 gnss_fq = 10.0; // Make sure it's divisible by CONTROL_FQ
 const u64 gnss_loops = CONTROL_FQ / gnss_fq;
 const f64 gnss_dt = 1.0 / gnss_fq;
 
-static const f64 imu_acc_max_value = 8.0*g; // m/s^2
+static const f64 imu_acc_max_value = 8.0*G; // m/s^2
 f64 imu_acc_to_ms2(i16 raw_acc) {
     return ((f64)raw_acc / (f64)INT16_MAX) * imu_acc_max_value; 
 }
@@ -82,9 +83,9 @@ f64 pid_step(
 
 
 PIDParams mot_pid_p = {
-    .p = 0.3,
+    .p = 0.2,
     .i = 0.0,
-    .d = 0.0,
+    .d = 0.01,
     .dt = c_dt,
     .high = 0.5,
     .low = -0.5
@@ -115,9 +116,9 @@ PIDState pos_y_pid_s = {0};
 
 // vel -> ori
 PIDParams vel_pid_p = {
-    .p = 0.1,
+    .p = 1.0,
     .i = 0.0,
-    .d = 0.0,
+    .d = 0.1,
     .dt = c_dt,
     .high = 0.2,    // rad
     .low = -0.2     // rad
@@ -127,18 +128,20 @@ PIDState vel_y_pid_s = {0};
 
 // ori -> rot
 PIDParams ori_pid_p = {
-    .p = 1.0,
+    .p = 0.5,
     .i = 0.0,
-    .d = 0.0,
+    .d = 0.1,
     .dt = c_dt,
     .high = 0.2,    // rad/s
     .low = -0.2     // rad/s
 };
 PIDState ori_x_pid_s = {0};
 PIDState ori_y_pid_s = {0};
+PIDState ori_z_pid_s = {0};
 
+// rot -> cmd
 PIDParams rot_pid_p = {
-    .p = 1.0,
+    .p = 0.1,
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
@@ -147,15 +150,6 @@ PIDParams rot_pid_p = {
 };
 PIDState rot_x_pid_s = {0};
 PIDState rot_y_pid_s = {0};
-
-#define MAT_SIZE 256
-typedef struct {
-    u64 r;
-    u64 c;
-    f64 data[MAT_SIZE];
-} Mat;
-
-#define MAT_AT(M, row, col) ((M).data[(row) * (M).c + (col)])
 
 // * https://kalmanfilter.net/
 
@@ -166,164 +160,6 @@ typedef struct {
 // You have to describe the system dynamics
 // It is nice to represent the filter in matrix notation
 
-Mat mat_mul(Mat *A, Mat *B) {
-    assert(A->c == B->r && "Dimension mismatch");
-
-    Mat C = {.r=A->r, .c=B->c};
-    for (u64 i=0; i<A->r; i++) {
-        for (u64 j=0; j<B->c; j++) {
-            f64 sum = 0.0;
-            for (u64 k=0; k<A->c; k++) {
-                sum += A->data[i*A->c + k] * B->data[k*B->c + j];
-            }
-            C.data[i*C.c + j] = sum;
-        }
-    }
-    return C;
-}
-
-Mat mat_sum(Mat *A, Mat *B) {
-    assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
-    
-    Mat C = {.r=A->r, .c=A->c};
-    for (u64 i=0; i<A->r*A->c; i++) {
-        C.data[i] = A->data[i] + B->data[i];
-    }
-
-    return C;
-}
-
-Mat mat_sub(Mat *A, Mat *B) {
-    assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
-    
-    Mat C = {.r=A->r, .c=A->c};
-    for (u64 i=0; i<A->r*A->c; i++) {
-        C.data[i] = A->data[i] - B->data[i];
-    }
-
-    return C;
-}
-
-Mat mat_trans(Mat *M) {
-    Mat N = { .r=M->c, .c=M->r };
-    for (u64 r=0; r<N.r; r++) {
-        for (u64 c=0; c<N.c; c++) {
-            N.data[r*N.c + c] = M->data[c*N.r + r];
-        }
-    }
-
-    return N;
-}
-
-Mat mat_identity(u64 size) {
-    Mat I = {0};
-    I.r = size;
-    I.c = size;
-    for (u64 i=0; i<size; i++) {
-        I.data[size*i + i] = 1.0;
-    }
-
-    return I;
-}
-
-void mat_print(Mat *M) {
-    printf("[\n");
-    for (u64 r=0; r<M->r; r++) {
-        printf("\t");
-        for (u64 c=0; c<M->c; c++) {
-            printf("%5.3lf, ", M->data[r*M->c + c]);
-        }
-        printf("\n");
-    }
-    printf("]\n");
-}
-
-Mat mat_inv(Mat *M) {
-    // A * A^-1 = I
-    // There's no concept of matrix division.
-    // If we multiply a matrix by an inversed matrix we achieve the same results a division.
-
-    // We're going to use Gauss-Jordan elimination with no pivoting here
-    // https://en.wikipedia.org/wiki/Gaussian_elimination
-    // Numerical Recipes in C, Chapter 2.1 "Gauss-Jordan Elimination"
-
-    // Row operations:
-    // * Swapping two rows,
-    // * Multiplying a row by a nonzero number,
-    // * Adding a multiple of one row to another row.
-
-    assert(M->c == M->r && "The matrix must be squared");
-
-    u64 size = M->c;
-
-    // Build the augmented matrix
-    // aug: [M | I]
-    Mat aug = {0};
-    aug.r = size;
-    aug.c = 2*size;
-
-    for (u64 r=0; r<size; r++) {
-        for (u64 c=0; c<size; c++) {
-            aug.data[r*aug.c + c] = M->data[r*M->c + c];
-        }
-    }
-
-    for (u64 i=0; i<size; i++) {
-        MAT_AT(aug, i, size+i) = 1.0;
-    }
-    
-    //mat_print(&aug);
-
-    for (u64 r=0; r<aug.r; r++) {
-        // Normalize rows
-        f64 pivot = MAT_AT(aug, r, r);
-        assert(pivot != 0.0);
-
-        for (u64 c=r; c<aug.c; c++) {
-            MAT_AT(aug, r, c) /= pivot;
-        }
-
-        // Eliminate this column from other rows
-        for (u64 rr=0; rr<size; rr++) {
-            if (rr == r) continue;
-
-            f64 factor = MAT_AT(aug, rr, r); // what to subtract
-            if (factor == 0.0) continue;
-
-            for (u64 c=0; c<aug.c; c++) {
-                MAT_AT(aug, rr, c) -= factor * MAT_AT(aug, r, c);
-            }
-        }
-
-        // Then the right amount of the row is subtracted from each other
-        // row to make all the remaining right element zero
-        
-        //mat_print(&aug);
-    }
-
-    Mat M_inv = {0};
-    M_inv.r = size;
-    M_inv.c = size;
-
-    // Copy left augmented size back
-    for (u64 r=0; r<size; r++) {
-        for (u64 c=0; c<size; c++) {
-            MAT_AT(M_inv, r, c) = MAT_AT(aug, r, c+size);
-        }
-    }
-
-    // Test code
-    //Mat I_test = mat_mul(M, &M_inv);
-    //Mat I_known = mat_identity(size);
-
-    //for (u64 r=0; r<M->r; r++) {
-    //    for (u64 c=0; c<M->c; c++) {
-    //        assert(I_test.data[r*I_test.r + c] == I_known.data[r*I_known.r + c]);
-    //    }
-    //}
-
-    return M_inv;
-}
 
 Mat rotate_vec3_euler_angles(Mat *vec3, f64 alpha, f64 beta, f64 gamma) {
     // https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
@@ -357,7 +193,12 @@ Mat rotate_vec3_euler_angles(Mat *vec3, f64 alpha, f64 beta, f64 gamma) {
     return v_rot;
 }
 
-// TODO: move to Z down convetion so ori -> acc is sign consistent
+// State vector
+//
+// Using ENU axis convetion:
+//  +X: east
+//  +Y: north
+//  +Z: up
 
 enum {
     S_POS_X, // m
@@ -366,19 +207,14 @@ enum {
     S_VEL_X, // m/s
     S_VEL_Y, // m/s
     S_VEL_Z, // m/s
-    S_ACC_X, // m/s^2
-    S_ACC_Y, // m/s^2
-    S_ACC_Z, // m/s^2
-    S_ORI_X, // rad
-    S_ORI_Y, // rad
-    S_ORI_Z, // rad
-    S_ROT_X, // rad/s
-    S_ROT_Y, // rad/s
-    S_ROT_Z, // rad/s
+    //S_ORI_X, // rad
+    //S_ORI_Y, // rad
+    //S_ORI_Z, // rad
+    //S_ROT_X, // rad/s
+    //S_ROT_Y, // rad/s
+    //S_ROT_Z, // rad/s
     S_STATE_DIM
 };
-
-// State vector
 Mat X = { .r=S_STATE_DIM, .c=1 };
 
 // State transition matrix
@@ -396,49 +232,69 @@ Mat Q = { .r=S_STATE_DIM, .c=S_STATE_DIM };
     MAT_AT(M, r0+2, c0+2) = val;
 
 void c_init() {
-    // pos
+    // --- Position ---
+    // State transition matrix
     SET_XYZ(F, S_POS_X, S_POS_X, 1.0);
     SET_XYZ(F, S_POS_X, S_VEL_X, c_dt);
-    SET_XYZ(F, S_POS_X, S_ACC_X, 0.5*c_dt*c_dt);
+    //MAT_AT(F, S_POS_Z, S_ACC_Z) = 0.5*c_dt*c_dt;
     
-    SET_XYZ(P, S_POS_X, S_POS_X, 1e2);
+    // State covariance matrix
+    SET_XYZ(P, S_POS_X, S_POS_X, 1e0);
     
-    SET_XYZ(Q, S_POS_X, S_POS_X, 0.5);
+    // Process covariance matrix
+    SET_XYZ(Q, S_POS_X, S_POS_X, 1e-5);
 
-    // vel
+    // --- Velocity ---
+    // State transition matrix
     SET_XYZ(F, S_VEL_X, S_VEL_X, 1.0);
-    SET_XYZ(F, S_VEL_X, S_ACC_X, c_dt);
+    //MAT_AT(F, S_VEL_Z, S_ACC_Z) = c_dt;
     
-    SET_XYZ(P, S_VEL_X, S_VEL_X, 1e-2);
+    // State covariance matrix
+    SET_XYZ(P, S_VEL_X, S_VEL_X, 1e1);
     
-    SET_XYZ(Q, S_VEL_X, S_VEL_X, 1.0);
-    
-    // acc
-    SET_XYZ(F, S_ACC_X, S_ACC_X, 1.0);
-    
-    SET_XYZ(P, S_ACC_X, S_ACC_X, 1e-2);
-    
-    SET_XYZ(Q, S_ACC_X, S_ACC_X, 5.0);
+    // Process covariance matrix
+    SET_XYZ(Q, S_VEL_X, S_VEL_X, 1e-4);
 
-    // ori
-    SET_XYZ(F, S_ORI_X, S_ORI_X, 1.0);
-    SET_XYZ(F, S_ORI_X, S_ROT_X, c_dt);
     
-    SET_XYZ(P, S_ORI_X, S_ORI_X, 1e-2);
+    // --- Acceleration ---
+    //// State transition matrix
+    //MAT_AT(F, S_ACC_Z, S_ACC_Z) = 1.0;
     
-    SET_XYZ(Q, S_ORI_X, S_ORI_X, 1e-2);
+    //// State covariance matrix
+    //MAT_AT(P, S_ACC_Z, S_ACC_Z) = 1e3;
 
-    // rot
-    SET_XYZ(F, S_ROT_X, S_ROT_X, 1.0);
-    
-    SET_XYZ(P, S_ROT_X, S_ROT_X, 1e-2);
-    
-    SET_XYZ(Q, S_ROT_X, S_ROT_X, 1e-1);
+    //// Process covariance matrix
+    //MAT_AT(Q, S_ACC_Z, S_ACC_Z) = 1.0;
 
-    mat_print(&F);
+    //SET_XYZ(F, S_ACC_X, S_ACC_X, 1.0);
+    
+    //SET_XYZ(P, S_ACC_X, S_ACC_X, 1e-2);
+    
+    //SET_XYZ(Q, S_ACC_X, S_ACC_X, 5.0);
+
+
+    // --- Orientation ---
+    // State transition matrix
+    //SET_XYZ(F, S_ORI_X, S_ORI_X, 1.0);
+    //SET_XYZ(F, S_ORI_X, S_ROT_X, c_dt);
+    
+    //// State covariance matrix
+    //SET_XYZ(P, S_ORI_X, S_ORI_X, 1e-2);
+    
+    //// Process covariance matrix
+    //SET_XYZ(Q, S_ORI_X, S_ORI_X, 1e-2);
+
+
+    //// --- Rotation ---
+    //// State transition matrix
+    //SET_XYZ(F, S_ROT_X, S_ROT_X, 1.0);
+    
+    //// State covariance matrix
+    //SET_XYZ(P, S_ROT_X, S_ROT_X, 1e-2);
+    
+    //// Process covariance matrix
+    //SET_XYZ(Q, S_ROT_X, S_ROT_X, 1e-1);
 }
-
-//Mat P_pred = {0};   // TODO: is this really needed?
 
 void kf_predict(
     Mat *B, // Control transition matrix
@@ -504,6 +360,16 @@ u64 imu_l = 0;
 u64 gnss_l = 0;
 u64 mag_l = 0;
 
+f64 c_rot_w[NUM_ROT] = {0};
+
+// Complementary filter for attitude estimation
+f64 ori_x = 0.0;
+f64 ori_y = 0.0;
+f64 ori_z = 0.0;
+f64 rot_x = 0.0;
+f64 rot_y = 0.0;
+f64 rot_z = 0.0;
+
 // Assume that the control_step() function is triggered by an interrupt
 // in the MCU every 1ms (1000Hz)
 void c_step(ControllerInterface *intr) {
@@ -512,10 +378,56 @@ void c_step(ControllerInterface *intr) {
     gnss_l++;
     mag_l++;
     
-    Mat B = { .r=S_STATE_DIM, .c=1 };
-    Mat U = { .r=1, .c=1 };
+    // --- Controlled Input ---
+
+    // Integrate rotation
+    ori_x += rot_x * c_dt;
+    ori_y += rot_y * c_dt;
+    ori_z += rot_z * c_dt;
+
+#ifdef CONTROL_DEBUG
+    intr->dbg[DBG_ORI_X] = ori_x;
+    intr->dbg[DBG_ORI_Y] = ori_y;
+    intr->dbg[DBG_ORI_Z] = ori_z;
     
-    kf_predict(&B, &U);
+    intr->dbg[DBG_ROT_X] = rot_x;
+    intr->dbg[DBG_ROT_Y] = rot_y;
+    intr->dbg[DBG_ROT_Z] = rot_z;
+#endif
+
+    for (u64 i=0; i<NUM_ROT; i++) {
+        c_rot_w[i] += (intr->rot_cmd[i] * rot_max_w - c_rot_w[i]) * (c_dt / tau_m);
+    }
+   
+#ifdef CONTROL_DEBUG
+    intr->dbg[DBG_ROT_W0] = c_rot_w[0];
+#endif
+
+    f64 tot_mot_f = 0.0;
+    for (u64 i=0; i<NUM_ROT; i++) {
+        tot_mot_f += kf * c_rot_w[i] * c_rot_w[i];
+    }
+    
+    Mat body_acc = { .r=3, .c=1, { 0.0, 0.0, tot_mot_f/mass }};
+
+    Mat world_acc = rotate_vec3_euler_angles(&body_acc, ori_x, ori_y, ori_z);
+    world_acc.data[2] -= G;
+
+    //world_acc.data[0] = -world_acc.data[0];
+    //world_acc.data[1] = -world_acc.data[1];
+
+#ifdef CONTROL_DEBUG
+    intr->dbg[DBG_ACC_X] = world_acc.data[0];
+    intr->dbg[DBG_ACC_Y] = world_acc.data[1];
+    intr->dbg[DBG_ACC_Z] = world_acc.data[2];
+#endif
+
+    //Mat U = { .r=1, .c=1, { world_acc.data[2] }};   // Control matrix
+    Mat B = { .r=S_STATE_DIM, .c=3 };   // Transition matrix
+    SET_XYZ(B, S_POS_X, 0, 0.5*c_dt*c_dt);
+    SET_XYZ(B, S_VEL_X, 0, c_dt);
+
+    kf_predict(&B, &world_acc);
 
     // --- Read sensors ---
     // --- Barometer ---
@@ -531,11 +443,13 @@ void c_step(ControllerInterface *intr) {
         f64 alt_m = (t0 - t) / 0.00649;
 
 #ifdef CONTROL_DEBUG
-        intr->dbg.alt_m_rdng = alt_m;
+        intr->dbg[DBG_ALT_RDNG] = alt_m;
 #endif
 
         Mat Z = { .r=1, .c=1, { alt_m }};
-        Mat R = { .r=1, .c=1, { 0.25  }};
+
+        const f64 sdev = 0.25;
+        Mat R = { .r=1, .c=1, { sdev*sdev }};
         Mat H = { .r=1, .c=S_STATE_DIM };
         MAT_AT(H, 0, S_POS_Z) = 1.0;
 
@@ -554,82 +468,69 @@ void c_step(ControllerInterface *intr) {
         // This assumes an ideal hover state. I wonder if there are
         // ways to subtract the effect of the known acceleration from this (Is 
         // this even stable?)
-        f64 acc_ori_x = -atan2(ay, -az);
-        f64 acc_ori_y =  atan2(ax, -az);
 
-        //printf("acc_ori_x=%lf, acc_ori_y=%lf\n", acc_ori_x, acc_ori_y);
+        ori_x = -atan2(ay, -az);
+        ori_y =  atan2(ax, -az);
+
         //printf("acc_x=%lf, acc_y=%lf, acc_z=%lf\n", ax, ay, az);
 
         // World-frame accelerations
-        Mat imu_body_acc = { .r=3, .c=1, {
-            ax,
-            ay,
-            az
-        }};
+
+        rot_x = imu_gyro_to_rad(intr->imu_rot_x); 
+        rot_y = imu_gyro_to_rad(intr->imu_rot_y); 
+        rot_z = imu_gyro_to_rad(intr->imu_rot_z); 
+
+        //Mat Z = { .r=8, .c=1, {
+        //    acc_ori_x,             // ori_x
+        //    acc_ori_y,             // ori_y
+        //    gx,                    // rot_x
+        //    gy,                    // rot_y
+        //    gz                     // rot_z
+        //}};
+
+        //Mat R = {0};
+        //R.r = Z.r;
+        //R.c = Z.r;
+
+        //R.data[0] =         0.00637;
+        //R.data[1 + 1*R.c] = 0.00637;
+        //R.data[2 + 2*R.c] = 0.00637;
+        //R.data[3 + 3*R.c] = 1e-1;
+        //R.data[4 + 4*R.c] = 1e-1;
+        //R.data[5 + 5*R.c] = 0.05 * DEG2RAD;
+        //R.data[6 + 6*R.c] = 0.05 * DEG2RAD;
+        //R.data[7 + 7*R.c] = 0.05 * DEG2RAD;
         
-        f64 alpha = X.data[S_ORI_X];
-        f64 beta  = X.data[S_ORI_Y];
-        f64 gamma = X.data[S_ORI_Z];
-
-        Mat imu_world_acc = rotate_vec3_euler_angles(&imu_body_acc, alpha, beta, gamma);
-        imu_world_acc.data[2] += g;
-
-        f64 gx = imu_gyro_to_rad(intr->imu_rot_x); 
-        f64 gy = imu_gyro_to_rad(intr->imu_rot_y); 
-        f64 gz = imu_gyro_to_rad(intr->imu_rot_z); 
-
-        Mat Z = { .r=8, .c=1, {
-            imu_world_acc.data[0], // acc_x
-            imu_world_acc.data[1], // acc_y
-            imu_world_acc.data[2], // acc_z
-            acc_ori_x,             // ori_x
-            acc_ori_y,             // ori_y
-            gx,                    // rot_x
-            gy,                    // rot_y
-            gz                     // rot_z
-        }};
-
-        Mat R = {0};
-        R.r = Z.r;
-        R.c = Z.r;
-
-        R.data[0] =         0.00637;
-        R.data[1 + 1*R.c] = 0.00637;
-        R.data[2 + 2*R.c] = 0.00637;
-        R.data[3 + 3*R.c] = 1e-1;
-        R.data[4 + 4*R.c] = 1e-1;
-        R.data[5 + 5*R.c] = 0.05 * DEG2RAD;
-        R.data[6 + 6*R.c] = 0.05 * DEG2RAD;
-        R.data[7 + 7*R.c] = 0.05 * DEG2RAD;
+        //Mat H = { .r=Z.r, .c=S_STATE_DIM };
+        //MAT_AT(H, 3, S_ORI_X) = 1.0;
+        //MAT_AT(H, 4, S_ORI_Y) = 1.0;
+        //MAT_AT(H, 5, S_ROT_X) = 1.0;
+        //MAT_AT(H, 6, S_ROT_Y) = 1.0;
+        //MAT_AT(H, 7, S_ROT_Z) = 1.0;
         
-        Mat H = { .r=Z.r, .c=S_STATE_DIM };
-        MAT_AT(H, 0, S_ACC_X) = 1.0;
-        MAT_AT(H, 1, S_ACC_Y) = 1.0;
-        MAT_AT(H, 2, S_ACC_Z) = 1.0;
-        MAT_AT(H, 3, S_ORI_X) = 1.0;
-        MAT_AT(H, 4, S_ORI_Y) = 1.0;
-        MAT_AT(H, 5, S_ROT_X) = 1.0;
-        MAT_AT(H, 6, S_ROT_Y) = 1.0;
-        MAT_AT(H, 7, S_ROT_Z) = 1.0;
-        
-        kf_correct(&Z, &H, &R);
+        //kf_correct(&Z, &H, &R);
     }
     
     // --- GNSS ---
-    if (gnss_l >= gnss_loops) {
+    /*if (gnss_l >= gnss_loops) {
         gnss_l=0;
 
         f64 pos_x = intr->pos_x / 100.0;
         f64 pos_y = intr->pos_y / 100.0;
 
 #ifdef CONTROL_DEBUG
-        intr->dbg.pos_x_rdng = pos_x;
-        intr->dbg.pos_y_rdng = pos_y;
+        //intr->dbg.pos_x_rdng = pos_x;
+        //intr->dbg.pos_y_rdng = pos_y;
 #endif
+
+        //f64 gnss_vel_x = pos_x - X.data[S_POS_X];
+        //f64 gnss_vel_y = pos_y - X.data[S_POS_Y];
 
         Mat Z = { .r=2, .c=1, {
             pos_x,
-            pos_y 
+            pos_y,
+            gnss_vel_x, 
+            gnss_vel_y, 
         }};
 
         const f64 gnss_pos_sdev = 1e2; //2.5; // m
@@ -644,49 +545,55 @@ void c_step(ControllerInterface *intr) {
         MAT_AT(H, 1, S_POS_Y) = 1.0;
 
         kf_correct(&Z, &H, &R);
-    }
+    }*/
 
     // --- Magnetometer ---
-    if (mag_l >= mag_loops) {
-        mag_l=0;
+    //if (mag_l >= mag_loops) {
+    //    mag_l=0;
 
-        f64 alpha = X.data[S_ORI_X];
-        f64 beta  = X.data[S_ORI_Y];
-        f64 gamma = X.data[S_ORI_Z];
+    //    f64 alpha = X.data[S_ORI_X];
+    //    f64 beta  = X.data[S_ORI_Y];
+    //    f64 gamma = X.data[S_ORI_Z];
 
-        Mat body_mag = { .r=3, .c=1, {
-            intr->mag_x,
-            intr->mag_y,
-            intr->mag_z
-        }};
+    //    Mat body_mag = { .r=3, .c=1, {
+    //        intr->mag_x,
+    //        intr->mag_y,
+    //        intr->mag_z
+    //    }};
 
-        Mat world_mag = rotate_vec3_euler_angles(&body_mag, alpha, beta, gamma);
+    //    Mat world_mag = rotate_vec3_euler_angles(&body_mag, alpha, beta, gamma);
 
-        f64 heading = atan2(-intr->mag_y, intr->mag_x);
-        //heading = fmod(heading + PI, 2*PI) - PI;
-        
-        Mat Z = { .r=1, .c=1, {
-            heading,
-        }};
+    //    f64 heading = atan2(-intr->mag_y, intr->mag_x);
+    //    //heading = fmod(heading + PI, 2*PI) - PI;
+    //    
+    //    Mat Z = { .r=1, .c=1, {
+    //        heading,
+    //    }};
 
-        const f64 mag_sdev = 1e-2;
-        const f64 mag_var = mag_sdev * mag_sdev;
-        Mat R = { .r=Z.r, .c=Z.r, { 
-            mag_var,
-        }};
+    //    const f64 mag_sdev = 1e-2;
+    //    const f64 mag_var = mag_sdev * mag_sdev;
+    //    Mat R = { .r=Z.r, .c=Z.r, { 
+    //        mag_var,
+    //    }};
 
-        Mat H = { .r=Z.r, .c=S_STATE_DIM };
-        MAT_AT(H, 0, S_ORI_Z) = 1.0;
+    //    Mat H = { .r=Z.r, .c=S_STATE_DIM };
+    //    MAT_AT(H, 0, S_ORI_Z) = 1.0;
 
-        kf_correct(&Z, &H, &R);
-    }
+    //    kf_correct(&Z, &H, &R);
+    //}
 
     // --- Attitude Control --- 
     
     // hover
-    f64 tgt_vel = pid_step(X.data[S_POS_Z], 10.0, &alt_pid_p, &alt_pid_s);
+    f64 tgt_alt = 10.0; // m
+    f64 tgt_vel = pid_step(X.data[S_POS_Z], tgt_alt, &alt_pid_p, &alt_pid_s);
 
-    const f64 hover_cmd = 0.3;
+    // Since we have all the initial parameters, we could compute the hovering cmd:
+    // NUM_ARMS * (hover_cmd*max_rot_w)^2 * kf = g
+    // sqrt(g / (NUM_ARMS * kf)) / max_rot_w = hover_cmd
+
+    const f64 hover_cmd =  sqrt(G / (NUM_ROT*kf)) / rot_max_w;
+
     f64 out_cmd = hover_cmd + pid_step(X.data[S_VEL_Z], tgt_vel, &mot_pid_p, &mot_pid_s);
 
     // pos -> vel
@@ -696,14 +603,16 @@ void c_step(ControllerInterface *intr) {
     //printf("vx: %lf\n", vel_x_tgt);
 
     // vel -> ori
-    f64 ori_x_tgt = pid_step(X.data[S_VEL_Y], vel_y_tgt, &vel_pid_p, &vel_x_pid_s);
-    f64 ori_y_tgt = pid_step(X.data[S_VEL_X], vel_x_tgt, &vel_pid_p, &vel_y_pid_s);
+    f64 ori_x_tgt = pid_step(X.data[S_VEL_Y], 0.0, &vel_pid_p, &vel_x_pid_s);
+    f64 ori_y_tgt = pid_step(X.data[S_VEL_X], 0.0, &vel_pid_p, &vel_y_pid_s);
 
     // ori -> rot
-    f64 rot_x_tgt = pid_step(X.data[S_ORI_X], -ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
-    f64 rot_y_tgt = pid_step(X.data[S_ORI_Y],  ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
-    f64 rot_z_tgt = pid_step(X.data[S_ORI_Z],  0.0,       &ori_pid_p, &ori_y_pid_s);
+    f64 rot_x_tgt = pid_step(ori_x, -ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
+    f64 rot_y_tgt = pid_step(ori_y,  ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
+    f64 rot_z_tgt = pid_step(ori_z, 0.0, &ori_pid_p, &ori_z_pid_s);
     
+    //printf("o: %lf, tr: %lf\n", ori_x, rot_x_tgt);
+
     //printf(
     //    "pos_y: %lf, tgt_ori_x: %lf, ori_x: %lf, tgt_rot_x: %lf\n",
     //    X.data[S_POS_Y],
@@ -713,29 +622,43 @@ void c_step(ControllerInterface *intr) {
     //);
 
     // rot -> cmd
-    f64 out_x_cmd = pid_step(X.data[S_ROT_X], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
-    f64 out_y_cmd = pid_step(X.data[S_ROT_Y], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
-    f64 out_z_cmd = pid_step(X.data[S_ROT_Z], rot_z_tgt, &rot_pid_p, &rot_y_pid_s);
-    
+    f64 rot_x_cmd = pid_step(rot_x, rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
+    f64 rot_y_cmd = pid_step(rot_y, rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
+    f64 rot_z_cmd = 0.0;//pid_step(rot_z, rot_z_tgt, &rot_pid_p, &rot_y_pid_s);
+
     // --- Motor mixer ---
+
+    // Using ENU axis:
+    //
+    //       North
+    //
+    //         ^
+    //      +Y |
+    //    
+    //    cw        ccw
+    //    ->        <-
+    //    M0        M1
+    //       \    /
+    //        \  /        +X
+    //         ||         ->   East
+    //        /  \ 
+    //       /    \ 
+    //    M3        M2
+    //    ->        <-
+    //    ccw       cw
+
     // fl > fr > rr > rl
-    intr->rot_cmd[0] = out_cmd - out_x_cmd - out_y_cmd + out_z_cmd;
-    intr->rot_cmd[1] = out_cmd + out_x_cmd - out_y_cmd - out_z_cmd;
-    intr->rot_cmd[2] = out_cmd + out_x_cmd + out_y_cmd + out_z_cmd;
-    intr->rot_cmd[3] = out_cmd - out_x_cmd + out_y_cmd - out_z_cmd;
+    intr->rot_cmd[0] = out_cmd + rot_x_cmd + rot_y_cmd + rot_z_cmd;
+    intr->rot_cmd[1] = out_cmd + rot_x_cmd - rot_y_cmd - rot_z_cmd;
+    intr->rot_cmd[2] = out_cmd - rot_x_cmd - rot_y_cmd + rot_z_cmd;
+    intr->rot_cmd[3] = out_cmd - rot_x_cmd + rot_y_cmd - rot_z_cmd;
 
 #ifdef CONTROL_DEBUG
-    intr->dbg.pos_x = X.data[S_POS_X];
-    intr->dbg.pos_y = X.data[S_POS_Y];
-    intr->dbg.pos_z = X.data[S_POS_Z];
-    intr->dbg.vel_z = X.data[S_VEL_Z];
-    intr->dbg.acc_z = X.data[S_ACC_Z];
-    intr->dbg.ori_x = X.data[S_ORI_X];
-    intr->dbg.ori_y = X.data[S_ORI_Y];
-    intr->dbg.ori_z = X.data[S_ORI_Z];
-    intr->dbg.rot_x = X.data[S_ROT_X];
-    intr->dbg.rot_y = X.data[S_ROT_Y];
-    intr->dbg.rot_z = X.data[S_ROT_Z];
-    intr->dbg.pid_out_vel = tgt_vel;
+    intr->dbg[DBG_POS_X] = X.data[S_POS_X];
+    intr->dbg[DBG_POS_Y] = X.data[S_POS_Y];
+    intr->dbg[DBG_POS_Z] = X.data[S_POS_Z];
+    intr->dbg[DBG_VEL_X] = X.data[S_VEL_X];
+    intr->dbg[DBG_VEL_Y] = X.data[S_VEL_Y];
+    intr->dbg[DBG_VEL_Z] = X.data[S_VEL_Z];
 #endif
 }

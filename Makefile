@@ -4,6 +4,8 @@ main: main.c
 	cc \
 		main.c \
 		control/control.c \
+		common/math/mat.c \
+		common/math/geom.c \
 		-o build/main \
 		-Wall \
 		-Wextra \
@@ -11,6 +13,7 @@ main: main.c
 		-g \
 		-O0 \
 		-Icontrol \
+		-Icommon \
 		-IC:/raylib/raylib/src \
 		-IC:/raylib/raylib/src/external \
 		-LC:/raylib/raylib/src \
