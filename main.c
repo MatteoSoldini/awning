@@ -33,47 +33,13 @@ float c_pitch_rad = 30.0f * DEG2RAD;
 
 ControllerInterface ctr_intr = {0};
 
+bool run_sim = true;
+
 // Generate a random unitary gaussian distributed variable using Box–Muller transform
 f64 rand_gauss() {
     f64 u1 = (rand() + 1.0) / (RAND_MAX + 1.0);
     f64 u2 = (rand() + 1.0) / (RAND_MAX + 1.0);
     return sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2);
-}
-
-vec3 vec3_enu_to_ned(vec3 *enu) {
-    return (vec3) {
-        .x =  enu->y,    // East -> North
-        .y =  enu->x,    // North -> East
-        .z = -enu->z     // Up -> Down
-    };
-}
-
-vec3 vec3_ned_to_enu(vec3 *ned) {
-    return (vec3) {
-        .x =  ned->y,    // East -> North
-        .y =  ned->x,    // North -> East
-        .z = -ned->z     // Down -> Up
-    };
-}
-
-quat quat_enu_to_ned(quat *enu) {
-    quat enu_to_ned_quat = {
-        .r = 0.0,
-        .i = sqrt(2)/2,
-        .j = sqrt(2)/2,
-        .k = 0.0
-    };
-    return quat_mul(&enu_to_ned_quat, enu);
-}
-
-quat quat_ned_to_enu(quat *ned) {
-    quat ned_to_enu_quat = {
-        .r = 0.0,
-        .i = -sqrt(2)/2,
-        .j = -sqrt(2)/2,
-        .k = 0.0
-    };
-    return quat_mul(&ned_to_enu_quat, ned);
 }
 
 void quat_to_mtx4(float mtx[16], quat q) {
@@ -137,7 +103,7 @@ rigid_body obj = {
     .pos = { 0.0, 0.0, 0.5},
     .vel = { 0.0, 0.0, 0.0},
     .acc = { 0.0, 0.0, 0.0},
-    .ori = { 1.0, 0.1, 0.0, 0.0},   // (this should be normalized to 1)
+    .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
     .rot = { 0.0, 0.0, 0.0},
     .mass = 2.0,
     .inertia = { 0.2, 0.2, 0.4 }
@@ -164,6 +130,7 @@ void cb_push(CircularBuffer *cb, f64 a) {
 
 CircularBuffer val1_cb = {0};
 CircularBuffer val2_cb = {0};
+CircularBuffer val3_cb = {0};
 
 const f64 p_freq = 1000.0; // Hz
 const f64 p_dt = 1.0 / p_freq;
@@ -302,8 +269,8 @@ void p_step() {
 
 // Barometer parameters
 // reference: BMP390
-const f64 s_upt_fq = 50.0;
-const u64 s_udt_mc = 1.0/s_upt_fq * 1e6;
+const f64 b_upt_fq = 50.0;
+const u64 s_udt_mc = 1.0/b_upt_fq * 1e6;
 const f64 s_sdev = 3.0;
 const u64 s_read_bits = 20;
 const u64 s_bit_mask = (1 << s_read_bits) - 1;
@@ -363,38 +330,67 @@ i64 simulate_sensor(f64 real, f64 max, f64 min, f64 sdev, u64 n_bits) {
     return norm * sat_value;
 }
 
+enum {
+    PHY_TIMER,
+    BARO_TIMER,
+    IMU_TIMER,
+    GNSS_TIMER,
+    MAG_TIMER,
+    CTR_TIMER,
+    CTR_DBG_TIMER,
+    NUM_TIMER
+};
+
+#define MICROS_FROM_HZ(fq) 1.0/fq * 1e6
+
+u64 delta_mc[NUM_TIMER] = {
+    MICROS_FROM_HZ(p_upt_fq),
+    MICROS_FROM_HZ(b_upt_fq),
+    MICROS_FROM_HZ(imu_upt_fq),
+    MICROS_FROM_HZ(gnss_udt_fq),
+    MICROS_FROM_HZ(mag_udt_fq),
+    MICROS_FROM_HZ(CONTROL_FQ),
+    MICROS_FROM_HZ(100.0),
+};
+
 void* p_update() {
     u64 now_mc = get_micros();
     
     u64 last_report_mc = now_mc;
     u64 p_step_count = 0; 
-    
-    u64 last_p_mc =    now_mc;
-    u64 last_s_mc =    now_mc;
-    u64 last_imu_mc =  now_mc;
-    u64 last_c_mc =    now_mc;
-    u64 last_gnss_mc = now_mc;
-    u64 last_mag_mc =  now_mc;
-    u64 last_log_mc =  now_mc;
+
+    u64 next_timer_mc[NUM_TIMER] = {0};
+    for (i32 i=0; i<NUM_TIMER; i++) {
+        next_timer_mc[i] = now_mc;
+    }
 
     while (true) {
         u64 now_mc = get_micros();
+        
+        if (!run_sim) {
+            for (i32 i=0; i<NUM_TIMER; i++) {
+                next_timer_mc[i] = now_mc;
+            }
+            continue;
+        }
+        
+        // Here, it is better to use the fixed time step.
+        // This way we avoid time drift:
+        // ex. Suppose that 1002us has passed since last
+        // physics step, then we would accumulate 2us (drift)
+        // if we use `now_mc`
 
         // Update physics
-        if (now_mc - last_p_mc >= p_udt_mc) {
-            last_p_mc += p_udt_mc;  // Here, it is better to use the fixed time step.
-                                    // This way we avoid time drift:
-                                    // ex. Suppose that 1002us has passed since last
-                                    // physics step, then we would accumulate 2us (drift)
-                                    // if we use `now_mc`
+        if (now_mc >= next_timer_mc[PHY_TIMER]) {
+            next_timer_mc[PHY_TIMER] += delta_mc[PHY_TIMER];
             p_step();
 
             p_step_count++;
         }
 
         // Update barometer
-        if (now_mc - last_s_mc >= s_udt_mc) {
-            last_s_mc += s_udt_mc;
+        if (now_mc >= next_timer_mc[BARO_TIMER]) {
+            next_timer_mc[BARO_TIMER] += delta_mc[BARO_TIMER];
             
             ctr_intr.pressure = (u64)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
         }
@@ -403,8 +399,8 @@ void* p_update() {
         // TODO: the way sensors are modelled here is not realistic since they take the immediate
         // value available, which is not correct. Doing like this, physics rate >> sensor rate we
         // create a kind of sensor random walk
-        if (now_mc - last_imu_mc >= imu_udt_mc) {
-            last_imu_mc += imu_udt_mc;
+        if (now_mc >= next_timer_mc[IMU_TIMER]) {
+            next_timer_mc[IMU_TIMER] += delta_mc[IMU_TIMER];
             
             // Real accelerometer: body acceleration + gravity
             vec3 imu_w_acc = obj.acc;
@@ -425,16 +421,16 @@ void* p_update() {
         }
 
         // Update GNSS
-        if (now_mc - last_gnss_mc >= gnss_upt_mc) {
-            last_gnss_mc += gnss_upt_mc;
+        if (now_mc >= next_timer_mc[GNSS_TIMER]) {
+            next_timer_mc[GNSS_TIMER] += delta_mc[GNSS_TIMER];
             
             ctr_intr.pos_x = (i32)((obj.pos.x + (gnss_pos_sdev * rand_gauss())) * 100);
             ctr_intr.pos_y = (i32)((obj.pos.y + (gnss_pos_sdev * rand_gauss())) * 100);
         }
         
         // Update Magnetometer
-        if (now_mc - last_mag_mc >= mag_upt_mc) {
-            last_mag_mc += mag_upt_mc;
+        if (now_mc >= next_timer_mc[MAG_TIMER]) {
+            next_timer_mc[MAG_TIMER] += delta_mc[MAG_TIMER];
             
             quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
             vec3 mag_field = { .x = 0.215, .y = 0.0, .z = -0.427 };  // TEMP
@@ -446,19 +442,20 @@ void* p_update() {
         }
 
         // Controller step
-        if (now_mc - last_c_mc >= c_udt_mc) {
-            last_c_mc += c_udt_mc;
+        if (now_mc >= next_timer_mc[CTR_TIMER]) {
+            next_timer_mc[CTR_TIMER] += delta_mc[CTR_TIMER];
 
             c_step(&ctr_intr);
         }
 
         // Log controller debug
-        if (now_mc - last_log_mc >= log_upt_mc) {
-            last_log_mc += log_upt_mc;
+        if (now_mc >= next_timer_mc[CTR_DBG_TIMER]) {
+            next_timer_mc[CTR_DBG_TIMER] += delta_mc[CTR_DBG_TIMER];
             
             vec3 obj_angles = quat_to_euler(&obj.ori);
-            cb_push(&val1_cb, obj.vel.x);
-            cb_push(&val2_cb, ctr_intr.dbg[DBG_VEL_X]);
+            cb_push(&val1_cb, ctr_intr.dbg[DBG_ORI_X]);
+            cb_push(&val2_cb, ctr_intr.dbg[DBG_ROT_X]);
+            cb_push(&val3_cb, ctr_intr.dbg[DBG_IN_ROT_X]);
         }
 
         // Log every 1s
@@ -481,12 +478,14 @@ void DrawGraph(
     int posY,
     int width,
     int height,
-    CircularBuffer *cb_real,
-    CircularBuffer *cb_tap
+    CircularBuffer *cb_1,
+    CircularBuffer *cb_2,
+    CircularBuffer *cb_3
 ) {
     #define GRAPH_PADDING 6
     #define RULER_DIVS_Y 5
     #define RULER_DIVS_X 10
+    #define NUM_CBS 3
 
     // Compute range
     f64 minV =  1e308;
@@ -495,9 +494,10 @@ void DrawGraph(
     f64 out_min = 0.0;
     f64 out_max = 0.0;
 
-    CircularBuffer *cbs[2] = { cb_real, cb_tap };
+    CircularBuffer *cbs[NUM_CBS] = { cb_1, cb_2, cb_3 };
+    Color cb_color[NUM_CBS] = {RED, GREEN, BLUE};
 
-    for (int c = 0; c < 2; c++) {
+    for (int c = 0; c < NUM_CBS; c++) {
         CircularBuffer *cb = cbs[c];
         u64 idx = cb->top;
 
@@ -541,8 +541,9 @@ void DrawGraph(
         DrawLine(xx, posY, xx, posY + height, DARKGRAY);
     } 
 
-    for (u64 b=0; b<2; b++) {
-        CircularBuffer *cb = b==0 ? cb_real : cb_tap;
+    const i32 text_size = 24;
+    for (u64 b=0; b<NUM_CBS; b++) {
+        CircularBuffer *cb = cbs[b];
         
         Vector2 points[CB_CAPACITY] = {0};
         u64 cb_idx = cb->top;
@@ -560,19 +561,12 @@ void DrawGraph(
                 .y = y,
             };
         }
+        char ch_text[64] = {0};
+        sprintf(ch_text, "%u: %5.2lf", b, cbs[b]->data[cb_1->top]);
+        DrawText(ch_text, posX + 10.0 + 110.0*b, posY, text_size, cb_color[b]);
 
-        DrawLineStrip(points, CB_CAPACITY, b==0 ? RED : WHITE);
+        DrawLineStrip(points, CB_CAPACITY, cb_color[b]);
     }
-
-    const i32 text_size = 24;
-    
-    char ch1_text[64] = {0};
-    sprintf(ch1_text, "r: %5.2lf", cb_real->data[cb_real->top]);
-    DrawText(ch1_text, posX + 10.0, posY, text_size, RED);
-    
-    char ch2_text[64] = {0};
-    sprintf(ch2_text, "t: %5.2lf", cb_tap->data[cb_tap->top]);
-    DrawText(ch2_text, posX + 120.0, posY, text_size, WHITE);
 }
 
 void DrawAxisTexture(RenderTexture2D rt, Camera3D mainCam) {
@@ -592,9 +586,9 @@ void DrawAxisTexture(RenderTexture2D rt, Camera3D mainCam) {
     cam.projection = CAMERA_PERSPECTIVE;
 
     const float len = 1.5f;
-    Vector3 xEnd = { len, 0, 0 };
-    Vector3 yEnd = { 0, 0, len };
-    Vector3 zEnd = { 0, len, 0 };
+    Vector3 xEnd = { len, 0, 0  };
+    Vector3 yEnd = { 0, 0, -len };
+    Vector3 zEnd = { 0, len, 0  };
 
     BeginTextureMode(rt);
         ClearBackground((Color){ 0, 0, 0, 0 });
@@ -678,7 +672,7 @@ int main(void) {
         
         camera.target.x = obj.pos.x;
         camera.target.y = obj.pos.z;
-        camera.target.z = obj.pos.y;
+        camera.target.z = -obj.pos.y;
 
         camera.position.x = camera.target.x + c_radius * cosf(c_pitch_rad) * cosf(c_yaw_rad);
         camera.position.y = camera.target.y + c_radius * sinf(c_pitch_rad);
@@ -689,17 +683,31 @@ int main(void) {
 
             BeginMode3D(camera);
                 rlPushMatrix();
-                    rlTranslatef(obj.pos.x, obj.pos.z, obj.pos.y);
+                    rlTranslatef(obj.pos.x, obj.pos.z, -obj.pos.y);
 
-                    quat rl_obj_rot = {
-                        .r = obj.ori.r,
-                        .i = -obj.ori.i,
-                        .j = -obj.ori.k,
-                        .k = -obj.ori.j
-                    };
                     float rot_mtx[16];
-                    quat_to_mtx4(rot_mtx, rl_obj_rot);
+                    quat_to_mtx4(rot_mtx, obj.ori);
+                    // Swap Y and Z
+                    
+                    // swap rows
+                    for (int i = 0; i < 3; i++) {
+                        float t = rot_mtx[4 + i];
+                        rot_mtx[4 + i] = rot_mtx[8 + i];
+                        rot_mtx[8 + i] = t;
+                    }
 
+                    // swap columns
+                    for (int i = 0; i < 3; i++) {
+                        float t = rot_mtx[i*4 + 1];
+                        rot_mtx[i*4 + 1] = rot_mtx[i*4 + 2];
+                        rot_mtx[i*4 + 2] = t;
+                    }
+
+                    // Flip Z
+                    rot_mtx[2] = -rot_mtx[2];
+                    rot_mtx[6] = -rot_mtx[6];
+                    rot_mtx[8] = -rot_mtx[8];
+                    rot_mtx[9] = -rot_mtx[9];
                     rlMultMatrixf(rot_mtx);
 
                     DrawCube((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), RED);
@@ -749,9 +757,14 @@ int main(void) {
             DrawText(p_fq_txt, 10, cur_y, text_size, WHITE);
             
             cur_y += text_size;
+            if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=panel_size, .height=text_size  }, run_sim ? "Stop" : "Run")) {
+                run_sim = !run_sim;
+            }
+            
+            cur_y += text_size;
             DrawLineEx(
                 (Vector2){0, cur_y},
-                (Vector2){panel_size, 10 + 2*text_size},
+                (Vector2){panel_size, cur_y},
                 2.0,
                 (Color){150, 150, 150, 255}
             );
@@ -833,11 +846,11 @@ int main(void) {
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, cur_y, panel_size, graph_height, &val1_cb, &val2_cb);
+            DrawGraph(0, cur_y, panel_size, graph_height, &val1_cb, &val2_cb, &val3_cb);
 
             cur_y += graph_height;
             if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=panel_size, .height=text_size  }, "Perturbe")) {
-                obj.rot.x += 0.0;
+                obj.rot.x += 0.3;
                 obj.rot.y += 0.2;
                 obj.rot.z += 0.0;
             }

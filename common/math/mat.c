@@ -2,11 +2,14 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <math.h>
 
 Mat mat_mul(Mat *A, Mat *B) {
     assert(A->c == B->r && "Dimension mismatch");
 
     Mat C = {.r=A->r, .c=B->c};
+    assert(C.r * C.c <= MAT_SIZE);
+
     for (u64 i=0; i<A->r; i++) {
         for (u64 j=0; j<B->c; j++) {
             f64 sum = 0.0;
@@ -23,6 +26,8 @@ Mat mat_sum(Mat *A, Mat *B) {
     assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
     
     Mat C = {.r=A->r, .c=A->c};
+    assert(C.r * C.c <= MAT_SIZE);
+    
     for (u64 i=0; i<A->r*A->c; i++) {
         C.data[i] = A->data[i] + B->data[i];
     }
@@ -34,6 +39,8 @@ Mat mat_sub(Mat *A, Mat *B) {
     assert(A->r == B->r && A->c == B->c && "Dimension mismatch");
     
     Mat C = {.r=A->r, .c=A->c};
+    assert(C.r * C.c <= MAT_SIZE);
+    
     for (u64 i=0; i<A->r*A->c; i++) {
         C.data[i] = A->data[i] - B->data[i];
     }
@@ -43,6 +50,8 @@ Mat mat_sub(Mat *A, Mat *B) {
 
 Mat mat_trans(Mat *M) {
     Mat N = { .r=M->c, .c=M->r };
+    assert(N.r * N.c <= MAT_SIZE);
+    
     for (u64 r=0; r<N.r; r++) {
         for (u64 c=0; c<N.c; c++) {
             N.data[r*N.c + c] = M->data[c*N.r + r];
@@ -53,9 +62,9 @@ Mat mat_trans(Mat *M) {
 }
 
 Mat mat_identity(u64 size) {
-    Mat I = {0};
-    I.r = size;
-    I.c = size;
+    Mat I = { .r=size, .c=size };
+    assert(I.r * I.c <= MAT_SIZE);
+    
     for (u64 i=0; i<size; i++) {
         I.data[size*i + i] = 1.0;
     }
@@ -98,10 +107,13 @@ Mat mat_inv(Mat *M) {
     Mat aug = {0};
     aug.r = size;
     aug.c = 2*size;
+    
+    assert(aug.r * aug.c <= MAT_SIZE);
 
     for (u64 r=0; r<size; r++) {
         for (u64 c=0; c<size; c++) {
-            aug.data[r*aug.c + c] = M->data[r*M->c + c];
+            MAT_AT(aug, r, c) = MAT_AT(*M, r, c);
+            //aug.data[r*aug.c + c] = M->data[r*M->c + c];
         }
     }
 
@@ -114,7 +126,7 @@ Mat mat_inv(Mat *M) {
     for (u64 r=0; r<aug.r; r++) {
         // Normalize rows
         f64 pivot = MAT_AT(aug, r, r);
-        assert(pivot != 0.0);
+        assert(fabs(pivot) > 1e-12);
 
         for (u64 c=r; c<aug.c; c++) {
             MAT_AT(aug, r, c) /= pivot;
@@ -141,6 +153,8 @@ Mat mat_inv(Mat *M) {
     Mat M_inv = {0};
     M_inv.r = size;
     M_inv.c = size;
+    
+    assert(M_inv.r * M_inv.c <= MAT_SIZE);
 
     // Copy left augmented size back
     for (u64 r=0; r<size; r++) {

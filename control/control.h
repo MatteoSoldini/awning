@@ -8,6 +8,7 @@
 #define NUM_ROT 4
 
 enum DebugValue {
+    // State vector
     DBG_POS_X,
     DBG_POS_Y,
     DBG_POS_Z,
@@ -23,8 +24,34 @@ enum DebugValue {
     DBG_ROT_X,
     DBG_ROT_Y,
     DBG_ROT_Z,
+   
+    // Inputs
+    DBG_IN_ALT,
+    DBG_IN_POS_X,
+    DBG_IN_POS_Y,
+    DBG_IN_ORI_X,
+    DBG_IN_ORI_Y,
+    DBG_IN_ROT_X,
+    DBG_IN_ROT_Y,
+    DBG_IN_ROT_Z,
+
+    // PID
+    DBG_VEL_X_TGT,
+    DBG_VEL_Y_TGT,
+    DBG_ROT_X_TGT,
+    DBG_ROT_Y_TGT,
+    DBG_ORI_X_TGT,
+    DBG_ORI_Y_TGT,
+    DBG_X_CMD,
+    DBG_Y_CMD,
+    DBG_Z_CMD,
+    
+    // Others
     DBG_ROT_W0,
-    DBG_ALT_RDNG,
+
+    // KF
+    DBG_KALMAN_GAIN,
+    
     DBG_NUM
 };
 
