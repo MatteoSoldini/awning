@@ -9,6 +9,12 @@
 #include <math/utils.h>
 #include <consts.h>
 
+#if defined(__i386__) || defined(__x86_64__)
+    #define DBG_BREAK() __asm__ volatile("int3");
+#else
+    #define DBG_BREAK() ((void)0)
+#endif
+
 const f64 c_dt = 1.0 / CONTROL_FQ;
 
 // Quadcopter physics
@@ -409,7 +415,25 @@ void c_init() {
 
 void ekf_predict(f64 thrust) {
     // X = F(X)
-    X = F(X, thrust);
+    Mat new_X = F(X, thrust);
+   
+#ifndef NDEBUG
+    Mat I = mat_sub(&new_X, &X);
+    for (i32 i = 0; i < X.r; i++) {
+        f64 vi = fabs(MAT_AT(I, i, 0));
+        
+        if (vi > 1.0) {
+            DBG_BREAK();
+        }
+
+        f64 sigma = sqrt(MAT_AT(P, i, i));   // expected stddev of residual
+        if (sigma > 1e-12 && vi > 5.0 * sigma) {
+            DBG_BREAK();
+        }
+    }
+#endif
+
+    X = new_X;
 
     // P = J(X)*P*J^T(X) + Q
     Mat Jx = J(X, thrust);
@@ -446,6 +470,7 @@ void ekf_correct(
         
         f64 sigma = sqrt(MAT_AT(S, i, i));   // expected stddev of residual
         if (sigma > 1e-12 && vi > 5.0 * sigma) {
+#ifndef NDEBUG
             printf("INNOV gate: i=%d I=%lf sigma=%lf (%.2f sigma)\n",
                    i, vi, sigma, vi/sigma);
             
@@ -462,6 +487,9 @@ void ekf_correct(
             printf("P: ");
             mat_print(&P);
             
+            DBG_BREAK();
+#endif
+
             return; // reject update
         }
     }
@@ -473,17 +501,20 @@ void ekf_correct(
     Mat K = mat_mul(&P, &H_t);
     K = mat_mul(&K, &S_inv);
 
-    f64 max = 0.0;
+#ifndef NDEBUG
+    f64 K_max = 0.0;
     for (i32 r=0; r<K.r; r++) {
         for (i32 c=0; c<K.c; c++) {
-            if (MAT_AT(K, r, c) > max) {
-                max = MAT_AT(K, r, c);
+            if (MAT_AT(K, r, c) > fabs(K_max)) {
+                K_max = fabs(MAT_AT(K, r, c));
             }
         }
-    }
+    }    
 
-    printf("K max: %lf\n", max);
-    assert(max <= 2.0);
+    if (K_max >= 1.5) {
+        printf("K_max: %lf\n", K_max);
+    }
+#endif
 
     // Update state
     // X = X + K*I
@@ -492,11 +523,43 @@ void ekf_correct(
 
     // Update covariance
     // P = P - K*S*K_t
+    
     Mat K_t = mat_trans(&K);
-    Mat KS = mat_mul(&K, &S);
-    Mat KSK_t = mat_mul(&KS, &K_t);
+    //Mat KS = mat_mul(&K, &S);
+    //Mat KSK_t = mat_mul(&KS, &K_t);
+    //P = mat_sub(&P, &KSK_t);
 
-    P = mat_sub(&P, &KSK_t);
+    // Using Joseph-form
+    // reference: https://kalman-filter.com/joseph-form/
+    // P = (Id - K H) P (Id - K H)^T + K R K^T
+    Mat KH = mat_mul(&K, H);
+
+    Mat Id = mat_identity(KH.r);
+
+    Mat IdminKH = mat_sub(&Id, &KH);
+    Mat IdminKHP = mat_mul(&IdminKH, &P);
+    Mat IdminKH_t = mat_trans(&IdminKH);
+    Mat IdminHKPIdminHK_t = mat_mul(&IdminKHP, &IdminKH_t);
+    
+    Mat KR = mat_mul(&K, R);
+    Mat KRK_t = mat_mul(&KR, &K_t);
+
+    P = mat_sum(&IdminHKPIdminHK_t, &KRK_t);
+
+    // Check P
+    // * Symmetric
+    // * Semi-positive (positive diagonal)
+    
+    for (u64 r=0; r<P.r; r++) {
+        for (u64 c=r+1; c<P.c; c++) {
+            f64 diff = MAT_AT(P, r, c) - MAT_AT(P, c, r);
+            assert(diff < 1e-12);
+        }
+    }
+
+    for (u64 r=0; r<P.r; r++) {
+        assert(MAT_AT(P, r, r) >= 0.0);
+    }
 }
 
 //void kf_predict(

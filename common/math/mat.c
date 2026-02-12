@@ -104,10 +104,7 @@ Mat mat_inv(Mat *M) {
 
     // Build the augmented matrix
     // aug: [M | I]
-    Mat aug = {0};
-    aug.r = size;
-    aug.c = 2*size;
-    
+    Mat aug = { .r=size, .c=2*size };
     assert(aug.r * aug.c <= MAT_SIZE);
 
     for (u64 r=0; r<size; r++) {
@@ -128,6 +125,18 @@ Mat mat_inv(Mat *M) {
         f64 pivot = MAT_AT(aug, r, r);
         assert(fabs(pivot) > 1e-12);
 
+        f64 col_max = 0.0;
+        for (u64 rr = r; rr < size; rr++) {
+            f64 v = fabs(MAT_AT(aug, rr, r));
+            if (v > col_max) col_max = v;
+        }
+
+        f64 ratio = fabs(pivot) / col_max;
+        if (ratio != 1.0) {
+            printf("ratio: %lf\n", ratio);
+            assert(ratio == 1.0);
+        }
+        
         for (u64 c=r; c<aug.c; c++) {
             MAT_AT(aug, r, c) /= pivot;
         }
@@ -163,15 +172,18 @@ Mat mat_inv(Mat *M) {
         }
     }
 
-    // Test code
-    //Mat I_test = mat_mul(M, &M_inv);
-    //Mat I_known = mat_identity(size);
+    // Prove result
+#ifndef NDEBUG
+    Mat I_test = mat_mul(M, &M_inv);
+    Mat I_known = mat_identity(size);
 
-    //for (u64 r=0; r<M->r; r++) {
-    //    for (u64 c=0; c<M->c; c++) {
-    //        assert(I_test.data[r*I_test.r + c] == I_known.data[r*I_known.r + c]);
-    //    }
-    //}
+    for (u64 r=0; r<M->r; r++) {
+        for (u64 c=0; c<M->c; c++) {
+            f64 diff = MAT_AT(I_test, r, c) - MAT_AT(I_known, r, c);
+            assert(fabs(diff) < 1e-15);
+        }
+    }
+#endif
 
     return M_inv;
 }

@@ -491,9 +491,6 @@ void DrawGraph(
     f64 minV =  1e308;
     f64 maxV = -1e308;
 
-    f64 out_min = 0.0;
-    f64 out_max = 0.0;
-
     CircularBuffer *cbs[NUM_CBS] = { cb_1, cb_2, cb_3 };
     Color cb_color[NUM_CBS] = {RED, GREEN, BLUE};
 
@@ -516,8 +513,8 @@ void DrawGraph(
 
     // Padding (10%)
     f64 pad = (maxV - minV) * 0.1;
-    out_min = minV - pad;
-    out_max = maxV + pad;
+    f64 out_min = minV - pad;
+    f64 out_max = maxV + pad;
 
     DrawRectangle(posX, posY, width, height, BLACK);
 
@@ -578,11 +575,11 @@ void DrawAxisTexture(RenderTexture2D rt, Camera3D mainCam) {
         Vector3Subtract(mainCam.target, mainCam.position)
     );
 
-    Camera3D cam = { 0 };
-    cam.position = Vector3Scale(forward, -5.0f); // pull back
-    cam.target   = (Vector3){ 0, 0, 0 };
-    cam.up       = mainCam.up;
-    cam.fovy     = 45.0f;
+    Camera3D cam   = { 0 };
+    cam.position   = Vector3Scale(forward, -5.0f); // pull back
+    cam.target     = (Vector3){ 0, 0, 0 };
+    cam.up         = mainCam.up;
+    cam.fovy       = 45.0f;
     cam.projection = CAMERA_PERSPECTIVE;
 
     const float len = 1.5f;
