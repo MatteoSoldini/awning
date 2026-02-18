@@ -86,6 +86,7 @@ f64 pressure(f64 alt_m) {
 const f64 air_rho = 1.293; // Density of pure, dry air at a temperature of 273 K
                               // and a pressure of 101.325 kPa.
 vec3 wind = { 0.0, 0.0, 0.0 }; // Uniform wind (m/s^2)
+vec3 mag_field = { .x = 0.0, .y = 1.0, .z = 0.0 };  // Poiting north
 
 typedef struct {
     vec3 pos;     // m
@@ -176,7 +177,7 @@ void p_step() {
     }
 
     // Rotate the thrust to the object orientation
-    vec3 tot_f = vec3_rotate_quat(&tot_mot_f, &obj.ori);
+    vec3 tot_f = vec3_rotate_by_quat(&tot_mot_f, &obj.ori);
     obj.acc = vec3_scale(&tot_f, 1.0/obj.mass);
     obj.acc.z -= G;
     
@@ -250,19 +251,20 @@ void p_step() {
     obj.rot = vec3_sum(&obj.rot, &d_rot);
     
     // Rotational integrator
+    // ori_q = q * 1/2*wq*dt
     quat wq = { 0.0, obj.rot.x, obj.rot.y, obj.rot.z };
+    wq.i *= 1.0/2 * p_dt;
+    wq.j *= 1.0/2 * p_dt;
+    wq.k *= 1.0/2 * p_dt;
+
     quat dq = quat_mul(&obj.ori, &wq);
-    dq.r *= 1.0/2 * p_dt;
-    dq.i *= 1.0/2 * p_dt;
-    dq.j *= 1.0/2 * p_dt;
-    dq.k *= 1.0/2 * p_dt;
 
     obj.ori.r += dq.r;
     obj.ori.i += dq.i;
     obj.ori.j += dq.j;
     obj.ori.k += dq.k;
 
-    quat_norm(&obj.ori);  // Crazy things happens if you don't normalize this
+    quat_norm(&obj.ori);
 
     //printf("%lf %lf %lf %lf\n", obj.ori.r, obj.ori.i, obj.ori.j, obj.ori.k);
 }
@@ -296,6 +298,7 @@ const f64 imu_rot_max_value = 250.0;     // rad/s  TO CHECK
 // is difficult to simulate in this case.
 // For the moment let's just assume that we get lat/lon and are passed plainly to the control code
 const f64 gnss_pos_sdev = 2.5;   // m
+const f64 gnss_vel_sdev = 0.05;  // m/s
 const f64 gnss_udt_fq =   10.0;  // Hz
 const u64 gnss_upt_mc =   1.0/gnss_udt_fq * 1e6;
 
@@ -408,7 +411,7 @@ void* p_update() {
 
             // Convert world accel to body frame (rotate by inverse quaternion)
             quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
-            vec3 imu_b_acc = vec3_rotate_quat(&imu_w_acc, &q_inv);
+            vec3 imu_b_acc = vec3_rotate_by_quat(&imu_w_acc, &q_inv);
 
             ctr_intr.imu_acc_x = simulate_sensor(imu_b_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
             ctr_intr.imu_acc_y = simulate_sensor(imu_b_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
@@ -433,8 +436,7 @@ void* p_update() {
             next_timer_mc[MAG_TIMER] += delta_mc[MAG_TIMER];
             
             quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
-            vec3 mag_field = { .x = 0.215, .y = 0.0, .z = -0.427 };  // TEMP
-            vec3 body_mag = vec3_rotate_quat(&mag_field, &q_inv);
+            vec3 body_mag = vec3_rotate_by_quat(&mag_field, &q_inv);
 
             ctr_intr.mag_x = body_mag.x + (mag_sdev * rand_gauss());
             ctr_intr.mag_y = body_mag.y + (mag_sdev * rand_gauss());
@@ -452,10 +454,10 @@ void* p_update() {
         if (now_mc >= next_timer_mc[CTR_DBG_TIMER]) {
             next_timer_mc[CTR_DBG_TIMER] += delta_mc[CTR_DBG_TIMER];
             
-            vec3 obj_angles = quat_to_euler(&obj.ori);
-            cb_push(&val1_cb, ctr_intr.dbg[DBG_ORI_X]);
-            cb_push(&val2_cb, ctr_intr.dbg[DBG_ROT_X]);
-            cb_push(&val3_cb, ctr_intr.dbg[DBG_IN_ROT_X]);
+            vec3 obj_angles = quat_to_euler_zyx(&obj.ori);
+            cb_push(&val1_cb, obj.pos.x);
+            cb_push(&val2_cb, ctr_intr.dbg[DBG_POS_X]);
+            cb_push(&val3_cb, 0.0);
         }
 
         // Log every 1s
@@ -819,7 +821,7 @@ int main(void) {
             DrawText(pos_txt, 10, cur_y, text_size, WHITE);
             DrawText("m", 175, cur_y, text_size, WHITE);
             
-            vec3 obj_angles = quat_to_euler(&obj.ori);
+            vec3 obj_angles = quat_to_euler_zyx(&obj.ori);
             cur_y += text_size;
             sprintf(pos_txt, "RX: %8.2lf", obj_angles.x * RAD2DEG);
             DrawText(pos_txt, 10, cur_y, text_size, WHITE);

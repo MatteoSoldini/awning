@@ -1,6 +1,7 @@
 #include "geom.h"
 #include <consts.h>
 #include <math.h>
+#include <assert.h>
 
 // --- 3D vector ---
 
@@ -60,11 +61,28 @@ vec3 vec3_abs(vec3 *v) {
     };
 }
 
+vec3 vec3_norm(vec3 *v) {
+    f64 norm = sqrt(v->x*v->x + v->y*v->y + v->z*v->z);
+    
+    return (vec3) {
+        .x = v->x/norm,
+        .y = v->y/norm,
+        .z = v->z/norm,
+    };
+}
+
 // --- Quaternions ---
 // https://eater.net/quaternions
 // https://stackoverflow.com/questions/49790453/enu-ned-frame-conversion-using-quaternions
+// https://lisyarus.github.io/blog/posts/introduction-to-quaternions.html
 
 quat quat_mul(quat *q1, quat *q2) {
+    // q1 * q2 = | q1r q2r - q2i q2i - q1j q2j - q1j q2k |
+    //           | q1r q2i + q1i q2r + q1j q2k - q1k q2j |
+    //           | q1r q2j - q1i q2k + q1j q2r + q1k q2i |
+    //           | q1r q2k + q1i q2j - q1j q2i + q1k q2r |
+    // Quaterion multiplication is non-commutative: q1 q2 != q2 q1
+
     quat q;
     q.r = q1->r * q2->r - q1->i * q2->i - q1->j * q2->j - q1->k * q2->k;
     q.i = q1->r * q2->i + q1->i * q2->r + q1->j * q2->k - q1->k * q2->j;
@@ -82,14 +100,17 @@ void quat_norm(quat *q) {
         q->k*q->k \
     );
 
+    assert(norm > 1e-15);
+
     q->r /= norm;
     q->i /= norm;
     q->j /= norm;
     q->k /= norm;
 }
 
-vec3 vec3_rotate_quat(vec3 *v, quat *q) {
-    // v_r = q * v * q^-1
+
+vec3 vec3_rotate_by_quat(vec3 *v, quat *q) {
+    // v_r = q v q^-1
 
     quat q_inv = { q->r, -q->i, -q->j, -q->k };
 
@@ -102,8 +123,11 @@ vec3 vec3_rotate_quat(vec3 *v, quat *q) {
     return result;
 }
 
-vec3 quat_to_euler(quat *q) {
-    // source: https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
+vec3 quat_to_euler_zyx(quat *q) {
+    // ZYX sequence
+    // Angles are between [-PI .. PI] (atan2)
+    // https://en.wikipedia.org/wiki/Atan2
+    // https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
 
     vec3 angles = {0};
 
