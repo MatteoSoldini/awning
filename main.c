@@ -104,7 +104,7 @@ rigid_body obj = {
     .pos = { 0.0, 0.0, 0.5},
     .vel = { 0.0, 0.0, 0.0},
     .acc = { 0.0, 0.0, 0.0},
-    .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
+    .ori = { 1.0, 0.0, 0.1, 0.0},   // (this should be normalized to 1)
     .rot = { 0.0, 0.0, 0.0},
     .mass = 2.0,
     .inertia = { 0.2, 0.2, 0.4 }
@@ -203,7 +203,8 @@ void p_step() {
 
     //printf("x=%lf, y=%lf, z=%lf\n", wind_acc.x, wind_acc.y, wind_acc.z);
 
-    obj.acc = vec3_sum(&obj.acc, &wind_acc);
+    // REVERT
+    //obj.acc = vec3_sum(&obj.acc, &wind_acc);
 
     // Linear integrator
     // v = v_0 + a*dt
@@ -253,9 +254,9 @@ void p_step() {
     // Rotational integrator
     // ori_q = q * 1/2*wq*dt
     quat wq = { 0.0, obj.rot.x, obj.rot.y, obj.rot.z };
-    wq.i *= 1.0/2 * p_dt;
-    wq.j *= 1.0/2 * p_dt;
-    wq.k *= 1.0/2 * p_dt;
+    wq.i *= 0.5 * p_dt;
+    wq.j *= 0.5 * p_dt;
+    wq.k *= 0.5 * p_dt;
 
     quat dq = quat_mul(&obj.ori, &wq);
 
@@ -399,25 +400,31 @@ void* p_update() {
         }
         
         // Update IMU
-        // TODO: the way sensors are modelled here is not realistic since they take the immediate
-        // value available, which is not correct. Doing like this, physics rate >> sensor rate we
-        // create a kind of sensor random walk
         if (now_mc >= next_timer_mc[IMU_TIMER]) {
             next_timer_mc[IMU_TIMER] += delta_mc[IMU_TIMER];
             
-            // Real accelerometer: body acceleration + gravity
-            vec3 imu_w_acc = obj.acc;
-            imu_w_acc.z -= G;
+            // --- Accelerometer ---
+            // https://en.wikipedia.org/wiki/Accelerometer
+            // Accelerometer measure proper acceleration, which is acceleration relative
+            // to a free-fall
+            
+            // p_a = w_a - a_frame
+            // a_meas = R'(p_a) + a_bias + a_noise
+            
+            quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
+            
+            vec3 g_acc = { 0.0, 0.0, -G };
+            vec3 b_g_acc = vec3_rotate_by_quat(&g_acc, &q_inv);
+            vec3 b_obj_acc = vec3_rotate_by_quat(&obj.acc, &q_inv);
+            vec3 p_acc = vec3_sub(&b_obj_acc, &b_g_acc);
 
             // Convert world accel to body frame (rotate by inverse quaternion)
-            quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
-            vec3 imu_b_acc = vec3_rotate_by_quat(&imu_w_acc, &q_inv);
+            ctr_intr.imu_acc_x = simulate_sensor(p_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+            ctr_intr.imu_acc_y = simulate_sensor(p_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+            ctr_intr.imu_acc_z = simulate_sensor(p_acc.z, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
 
-            ctr_intr.imu_acc_x = simulate_sensor(imu_b_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-            ctr_intr.imu_acc_y = simulate_sensor(imu_b_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-            ctr_intr.imu_acc_z = simulate_sensor(imu_b_acc.z, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-
-            // Gyro
+            // --- Gyroscope ---
+            // omega_measured = omega_real + omega_bias + omega_noise
             ctr_intr.imu_rot_x = simulate_sensor(obj.rot.x, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
             ctr_intr.imu_rot_y = simulate_sensor(obj.rot.y, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
             ctr_intr.imu_rot_z = simulate_sensor(obj.rot.z, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
@@ -455,9 +462,9 @@ void* p_update() {
             next_timer_mc[CTR_DBG_TIMER] += delta_mc[CTR_DBG_TIMER];
             
             vec3 obj_angles = quat_to_euler_zyx(&obj.ori);
-            cb_push(&val1_cb, obj.pos.x);
-            cb_push(&val2_cb, ctr_intr.dbg[DBG_POS_X]);
-            cb_push(&val3_cb, 0.0);
+            cb_push(&val1_cb, obj_angles.y);
+            cb_push(&val2_cb, ctr_intr.dbg[DBG_ORI_Y]);
+            cb_push(&val3_cb, ctr_intr.dbg[DBG_ROT_X]);
         }
 
         // Log every 1s
@@ -618,6 +625,14 @@ void DrawAxisTexture(RenderTexture2D rt, Camera3D mainCam) {
 
 Color viewport_bg_col = (Color){ 30, 30, 30, 255 };
 
+Vector3 phy_to_raylib(vec3 *v) {
+    return (Vector3) {
+        .x =  v->x,
+        .y =  v->z,
+        .z = -v->y
+    };
+}
+
 int main(void) {
     i32 win_w = 1920;
     i32 win_h = 1080;
@@ -711,6 +726,16 @@ int main(void) {
 
                     DrawCube((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), RED);
                     DrawCubeWires((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), MAROON);
+
+                    // Draw debug accelerometer readings
+                    Vector3 start = {0.0, 0.0, 0.0};
+                    vec3 end_phy = {
+                        ctr_intr.dbg[DBG_IN_ACC_X] / 10,
+                        ctr_intr.dbg[DBG_IN_ACC_Y] / 10,
+                        ctr_intr.dbg[DBG_IN_ACC_Z] / 10
+                    };
+                    Vector3 end = phy_to_raylib(&end_phy);
+                    DrawLine3D(start, end, BLUE);
                 rlPopMatrix();
                 
                 // Floor tiles

@@ -25,12 +25,16 @@ enum DebugValue {
     DBG_ROT_Y,
     DBG_ROT_Z,
    
+    // Covariance vector
+    DBG_COV_OMEGA_Y,
+
     // Inputs
     DBG_IN_ALT,
     DBG_IN_POS_X,
     DBG_IN_POS_Y,
-    DBG_IN_ORI_X,
-    DBG_IN_ORI_Y,
+    DBG_IN_ACC_X,
+    DBG_IN_ACC_Y,
+    DBG_IN_ACC_Z,
     DBG_IN_ROT_X,
     DBG_IN_ROT_Y,
     DBG_IN_ROT_Z,
