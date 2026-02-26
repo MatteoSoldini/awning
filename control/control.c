@@ -256,7 +256,7 @@ Mat F(Mat Xp, f64 thrust) {
     // q += q 1/2 wq dt
     quat q = QUAT_FROM_STATE(Xp);
     quat w = {0, Xp.data[S_OMEGA_X], Xp.data[S_OMEGA_Y], Xp.data[S_OMEGA_Z]};
-    //quat w = {0, 0.0, 0.1, 0.0};
+    //quat w = {0, 0.0, 0.0, 0.0};
     quat dq = quat_mul(&q, &w);
     
     q.r += 0.5 * dq.r * c_dt;
@@ -419,7 +419,7 @@ void c_init() {
     SET_XYZ(P, S_POS_X, S_POS_X, 1e0);
     
     // Process covariance matrix
-    SET_XYZ(Q, S_POS_X, S_POS_X, 1e-5);
+    SET_XYZ(Q, S_POS_X, S_POS_X, 1e-2);
 
     
     // --- Velocity ---
@@ -427,7 +427,7 @@ void c_init() {
     SET_XYZ(P, S_VEL_X, S_VEL_X, 1e1);
     
     // Process covariance matrix
-    SET_XYZ(Q, S_VEL_X, S_VEL_X, 1e-4);
+    SET_XYZ(Q, S_VEL_X, S_VEL_X, 1e-3);
 
     
     // --- Orientation ---
@@ -449,7 +449,7 @@ void c_init() {
     SET_XYZ(P, S_OMEGA_X, S_OMEGA_X, 1e0);
     
     // Process covariance matrix
-    SET_XYZ(Q, S_OMEGA_X, S_OMEGA_X, 1e-3);
+    SET_XYZ(Q, S_OMEGA_X, S_OMEGA_X, 1e-5);
 }
 
 void ekf_predict(f64 thrust) {
@@ -512,7 +512,7 @@ Mat h_accelerometer(Mat *X) {
     return (Mat) { .r=3, .c=1, {
         2*G*(q.i*q.k - q.j*q.r),      // x
         2*G*(q.j*q.k + q.i*q.r),      // y
-        G - 2*G*(q.i*q.i + q.j*q.j)   // z
+        G*(1 - 2*(q.i*q.i + q.j*q.j)) // z
     }};
 }
 
@@ -948,9 +948,9 @@ void c_step(ControllerInterface *intr) {
         f64 mag = sqrt(ax*ax + ay*ay + az*az); 
         if (fabs(mag - G) < 0.2*G) {
             Mat Z = { .r=3, .c=1, {
-                ax/mag,
-                ay/mag,
-                az/mag,
+                ax,
+                ay,
+                az,
             }};
         
             Mat R = { .r=Z.r, .c=Z.r };
@@ -1016,13 +1016,13 @@ void c_step(ControllerInterface *intr) {
             pos_y,
         }};
 
-        const f64 gnss_pos_sdev = 2.5; // m
+        const f64 gnss_pos_sdev = 10; //2.5; // m
         const f64 gnss_pos_var = gnss_pos_sdev * gnss_pos_sdev;   // m^2
         Mat R = { .r=Z.r, .c=Z.r };
         MAT_AT(R, 0, 0) = gnss_pos_var;
         MAT_AT(R, 1, 1) = gnss_pos_var;
 
-        //ekf_correct(&Z, h_posXY, H_posXY, &R);
+        ekf_correct(&Z, h_posXY, H_posXY, &R);
     }
 
     // --- Magnetometer ---
@@ -1053,7 +1053,7 @@ void c_step(ControllerInterface *intr) {
         MAT_AT(R, 1, 1) = mag_var;
         MAT_AT(R, 2, 2) = mag_var;
 
-        //ekf_correct(&Z, h_body_north_dir, H_body_north_dir, &R);
+        ekf_correct(&Z, h_body_north_dir, H_body_north_dir, &R);
     }
 
     // --- Attitude Control --- 

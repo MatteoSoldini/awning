@@ -33,7 +33,7 @@ float c_pitch_rad = 30.0f * DEG2RAD;
 
 ControllerInterface ctr_intr = {0};
 
-bool run_sim = true;
+bool run_sim = false;
 
 // Generate a random unitary gaussian distributed variable using Box–Muller transform
 f64 rand_gauss() {
@@ -104,7 +104,7 @@ rigid_body obj = {
     .pos = { 0.0, 0.0, 0.5},
     .vel = { 0.0, 0.0, 0.0},
     .acc = { 0.0, 0.0, 0.0},
-    .ori = { 1.0, 0.0, 0.1, 0.0},   // (this should be normalized to 1)
+    .ori = { 1.0, 0.0, 0.0, 0.0},   // (this should be normalized to 1)
     .rot = { 0.0, 0.0, 0.0},
     .mass = 2.0,
     .inertia = { 0.2, 0.2, 0.4 }
@@ -118,7 +118,7 @@ u64 get_micros() {
     return (u64)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
 }
 
-#define CB_CAPACITY 128
+#define CB_CAPACITY 1024
 typedef struct {
     u64 top;
     f64 data[CB_CAPACITY];
@@ -129,9 +129,7 @@ void cb_push(CircularBuffer *cb, f64 a) {
     cb->data[cb->top] = a;
 }
 
-CircularBuffer val1_cb = {0};
-CircularBuffer val2_cb = {0};
-CircularBuffer val3_cb = {0};
+CircularBuffer cbs[DBG_NUM] = {0};
 
 const f64 p_freq = 1000.0; // Hz
 const f64 p_dt = 1.0 / p_freq;
@@ -347,15 +345,93 @@ enum {
 
 #define MICROS_FROM_HZ(fq) 1.0/fq * 1e6
 
-u64 delta_mc[NUM_TIMER] = {
-    MICROS_FROM_HZ(p_upt_fq),
-    MICROS_FROM_HZ(b_upt_fq),
-    MICROS_FROM_HZ(imu_upt_fq),
-    MICROS_FROM_HZ(gnss_udt_fq),
-    MICROS_FROM_HZ(mag_udt_fq),
-    MICROS_FROM_HZ(CONTROL_FQ),
-    MICROS_FROM_HZ(100.0),
+//u64 delta_mc[NUM_TIMER] = {
+//    MICROS_FROM_HZ(p_upt_fq),
+//    MICROS_FROM_HZ(b_upt_fq),
+//    MICROS_FROM_HZ(imu_upt_fq),
+//    MICROS_FROM_HZ(gnss_udt_fq),
+//    MICROS_FROM_HZ(mag_udt_fq),
+//    MICROS_FROM_HZ(CONTROL_FQ),
+//    MICROS_FROM_HZ(100.0),
+//};
+
+const f64 world_fq = 1000.0;
+u64 world_timers[NUM_TIMER] = {
+    (u64)(world_fq / p_upt_fq),
+    (u64)(world_fq / b_upt_fq),
+    (u64)(world_fq / imu_upt_fq),
+    (u64)(world_fq / gnss_udt_fq),
+    (u64)(world_fq / mag_udt_fq),
+    (u64)(world_fq / CONTROL_FQ),
+    (u64)(world_fq / 100.0)
 };
+
+u64 world_counter = 0;
+void world_step() {
+    world_counter++;
+    
+    if (world_counter % world_timers[PHY_TIMER] == 0) {
+        p_step();
+    }
+    
+    if (world_counter % world_timers[BARO_TIMER] == 0) {
+        ctr_intr.pressure = (u64)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
+    }
+    
+    if (world_counter % world_timers[IMU_TIMER] == 0) {
+        // --- Accelerometer ---
+        // https://en.wikipedia.org/wiki/Accelerometer
+        // Accelerometer measure proper acceleration, which is acceleration relative
+        // to a free-fall
+        
+        // p_a = w_a - a_frame
+        // a_meas = R'(p_a) + a_bias + a_noise
+        
+        quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
+        
+        vec3 g_acc = { 0.0, 0.0, -G };
+        vec3 b_g_acc = vec3_rotate_by_quat(&g_acc, &q_inv);
+        vec3 b_obj_acc = vec3_rotate_by_quat(&obj.acc, &q_inv);
+        vec3 p_acc = vec3_sub(&b_obj_acc, &b_g_acc);
+
+        // Convert world accel to body frame (rotate by inverse quaternion)
+        ctr_intr.imu_acc_x = simulate_sensor(p_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+        ctr_intr.imu_acc_y = simulate_sensor(p_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+        ctr_intr.imu_acc_z = simulate_sensor(p_acc.z, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+
+        // --- Gyroscope ---
+        // omega_measured = omega_real + omega_bias + omega_noise
+        ctr_intr.imu_rot_x = simulate_sensor(obj.rot.x, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
+        ctr_intr.imu_rot_y = simulate_sensor(obj.rot.y, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
+        ctr_intr.imu_rot_z = simulate_sensor(obj.rot.z, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
+    }
+    
+    if (world_counter % world_timers[GNSS_TIMER] == 0) {
+        ctr_intr.pos_x = (i32)((obj.pos.x + (gnss_pos_sdev * rand_gauss())) * 100);
+        ctr_intr.pos_y = (i32)((obj.pos.y + (gnss_pos_sdev * rand_gauss())) * 100);
+    }
+    
+    if (world_counter % world_timers[MAG_TIMER] == 0) {
+        quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
+        vec3 body_mag = vec3_rotate_by_quat(&mag_field, &q_inv);
+
+        ctr_intr.mag_x = body_mag.x + (mag_sdev * rand_gauss());
+        ctr_intr.mag_y = body_mag.y + (mag_sdev * rand_gauss());
+        ctr_intr.mag_z = body_mag.z + (mag_sdev * rand_gauss());
+    }
+    
+    if (world_counter % world_timers[CTR_TIMER] == 0) {
+        c_step(&ctr_intr);
+    }
+    
+    if (world_counter % world_timers[CTR_DBG_TIMER] == 0) {
+        vec3 obj_angles = quat_to_euler_zyx(&obj.ori);
+
+        for (u64 i=0; i<DBG_NUM; i++) {
+            cb_push(&cbs[i], ctr_intr.dbg[i]);
+        }
+    }
+}
 
 void* p_update() {
     u64 now_mc = get_micros();
@@ -363,108 +439,21 @@ void* p_update() {
     u64 last_report_mc = now_mc;
     u64 p_step_count = 0; 
 
-    u64 next_timer_mc[NUM_TIMER] = {0};
-    for (i32 i=0; i<NUM_TIMER; i++) {
-        next_timer_mc[i] = now_mc;
-    }
+    u64 next_world_step_mc = now_mc;
 
     while (true) {
         u64 now_mc = get_micros();
         
         if (!run_sim) {
-            for (i32 i=0; i<NUM_TIMER; i++) {
-                next_timer_mc[i] = now_mc;
-            }
+            next_world_step_mc = now_mc;
             continue;
         }
         
-        // Here, it is better to use the fixed time step.
-        // This way we avoid time drift:
-        // ex. Suppose that 1002us has passed since last
-        // physics step, then we would accumulate 2us (drift)
-        // if we use `now_mc`
+        if (now_mc >= next_world_step_mc) {
+            next_world_step_mc += MICROS_FROM_HZ(world_fq);
 
-        // Update physics
-        if (now_mc >= next_timer_mc[PHY_TIMER]) {
-            next_timer_mc[PHY_TIMER] += delta_mc[PHY_TIMER];
-            p_step();
-
+            world_step();
             p_step_count++;
-        }
-
-        // Update barometer
-        if (now_mc >= next_timer_mc[BARO_TIMER]) {
-            next_timer_mc[BARO_TIMER] += delta_mc[BARO_TIMER];
-            
-            ctr_intr.pressure = (u64)(pressure(obj.pos.z) + s_sdev * rand_gauss()) & s_bit_mask;
-        }
-        
-        // Update IMU
-        if (now_mc >= next_timer_mc[IMU_TIMER]) {
-            next_timer_mc[IMU_TIMER] += delta_mc[IMU_TIMER];
-            
-            // --- Accelerometer ---
-            // https://en.wikipedia.org/wiki/Accelerometer
-            // Accelerometer measure proper acceleration, which is acceleration relative
-            // to a free-fall
-            
-            // p_a = w_a - a_frame
-            // a_meas = R'(p_a) + a_bias + a_noise
-            
-            quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
-            
-            vec3 g_acc = { 0.0, 0.0, -G };
-            vec3 b_g_acc = vec3_rotate_by_quat(&g_acc, &q_inv);
-            vec3 b_obj_acc = vec3_rotate_by_quat(&obj.acc, &q_inv);
-            vec3 p_acc = vec3_sub(&b_obj_acc, &b_g_acc);
-
-            // Convert world accel to body frame (rotate by inverse quaternion)
-            ctr_intr.imu_acc_x = simulate_sensor(p_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-            ctr_intr.imu_acc_y = simulate_sensor(p_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-            ctr_intr.imu_acc_z = simulate_sensor(p_acc.z, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-
-            // --- Gyroscope ---
-            // omega_measured = omega_real + omega_bias + omega_noise
-            ctr_intr.imu_rot_x = simulate_sensor(obj.rot.x, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
-            ctr_intr.imu_rot_y = simulate_sensor(obj.rot.y, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
-            ctr_intr.imu_rot_z = simulate_sensor(obj.rot.z, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
-        }
-
-        // Update GNSS
-        if (now_mc >= next_timer_mc[GNSS_TIMER]) {
-            next_timer_mc[GNSS_TIMER] += delta_mc[GNSS_TIMER];
-            
-            ctr_intr.pos_x = (i32)((obj.pos.x + (gnss_pos_sdev * rand_gauss())) * 100);
-            ctr_intr.pos_y = (i32)((obj.pos.y + (gnss_pos_sdev * rand_gauss())) * 100);
-        }
-        
-        // Update Magnetometer
-        if (now_mc >= next_timer_mc[MAG_TIMER]) {
-            next_timer_mc[MAG_TIMER] += delta_mc[MAG_TIMER];
-            
-            quat q_inv = { obj.ori.r, -obj.ori.i, -obj.ori.j, -obj.ori.k };
-            vec3 body_mag = vec3_rotate_by_quat(&mag_field, &q_inv);
-
-            ctr_intr.mag_x = body_mag.x + (mag_sdev * rand_gauss());
-            ctr_intr.mag_y = body_mag.y + (mag_sdev * rand_gauss());
-            ctr_intr.mag_z = body_mag.z + (mag_sdev * rand_gauss());
-        }
-
-        // Controller step
-        if (now_mc >= next_timer_mc[CTR_TIMER]) {
-            next_timer_mc[CTR_TIMER] += delta_mc[CTR_TIMER];
-
-            c_step(&ctr_intr);
-        }
-
-        // Log controller debug
-        if (now_mc >= next_timer_mc[CTR_DBG_TIMER]) {
-            next_timer_mc[CTR_DBG_TIMER] += delta_mc[CTR_DBG_TIMER];
-            
-            vec3 obj_angles = quat_to_euler_zyx(&obj.ori);
-            cb_push(&val1_cb, obj_angles.y);
-            cb_push(&val2_cb, ctr_intr.dbg[DBG_ORI_Y]);
-            cb_push(&val3_cb, ctr_intr.dbg[DBG_ROT_X]);
         }
 
         // Log every 1s
@@ -482,29 +471,26 @@ void p_init() {
     assert(pthread_create(&p_thread, NULL, p_update, NULL) == 0);
 }
 
+typedef struct {
+    CircularBuffer *cb;
+    Color color;
+    char *name;
+} GraphData;
+
 void DrawGraph(
     int posX,
     int posY,
     int width,
     int height,
-    CircularBuffer *cb_1,
-    CircularBuffer *cb_2,
-    CircularBuffer *cb_3
+    GraphData *graph_data,
+    u64 num_graphs
 ) {
-    #define GRAPH_PADDING 6
-    #define RULER_DIVS_Y 5
-    #define RULER_DIVS_X 10
-    #define NUM_CBS 3
-
     // Compute range
     f64 minV =  1e308;
     f64 maxV = -1e308;
 
-    CircularBuffer *cbs[NUM_CBS] = { cb_1, cb_2, cb_3 };
-    Color cb_color[NUM_CBS] = {RED, GREEN, BLUE};
-
-    for (int c = 0; c < NUM_CBS; c++) {
-        CircularBuffer *cb = cbs[c];
+    for (int c = 0; c < num_graphs; c++) {
+        CircularBuffer *cb = graph_data[c].cb;
         u64 idx = cb->top;
 
         for (u64 i = 0; i < CB_CAPACITY; i++) {
@@ -524,32 +510,37 @@ void DrawGraph(
     f64 pad = (maxV - minV) * 0.1;
     f64 out_min = minV - pad;
     f64 out_max = maxV + pad;
+    f64 range = out_max - out_min;
 
     DrawRectangle(posX, posY, width, height, BLACK);
 
     // Y ruler (horizontal lines)
-    for (int i = 0; i <= RULER_DIVS_Y; i++) {
-        float t = (float)i / RULER_DIVS_Y;
-        float yy = posY + height * t;
+    i32 zero_pos_h = out_max / range * height;
+    DrawLine(posX, posY + zero_pos_h, posX + width, posY + zero_pos_h, GRAY);
+    DrawText("0", posX, posY + zero_pos_h - 10, 10, GRAY);
 
-        DrawLine(posX, yy, posX + width, yy, DARKGRAY);
+    //for (int i = 0; i <= RULER_DIVS_Y; i++) {
+    //    float t = (float)i / RULER_DIVS_Y;
+    //    float yy = posY + height * t;
 
-        f64 value = maxV - t * (maxV - minV);
-        DrawText(TextFormat("%.2f", value),
-                 posX + 4, yy - 10, 10, GRAY);
-    }
+    //    DrawLine(posX, yy, posX + width, yy, DARKGRAY);
+
+    //    f64 value = maxV - t * (maxV - minV);
+    //    DrawText(TextFormat("%.2f", value),
+    //             posX + 4, yy - 10, 10, GRAY);
+    //}
 
     // X ruler (vertical lines)
-    for (int i = 0; i <= RULER_DIVS_X; i++) {
-        float t = (float)i / RULER_DIVS_X;
-        float xx = posX + width * t;
+    //for (int i = 0; i <= RULER_DIVS_X; i++) {
+    //    float t = (float)i / RULER_DIVS_X;
+    //    float xx = posX + width * t;
 
-        DrawLine(xx, posY, xx, posY + height, DARKGRAY);
-    } 
+    //    DrawLine(xx, posY, xx, posY + height, DARKGRAY);
+    //} 
 
     const i32 text_size = 24;
-    for (u64 b=0; b<NUM_CBS; b++) {
-        CircularBuffer *cb = cbs[b];
+    for (u64 b=0; b<num_graphs; b++) {
+        CircularBuffer *cb = graph_data[b].cb;
         
         Vector2 points[CB_CAPACITY] = {0};
         u64 cb_idx = cb->top;
@@ -560,18 +551,18 @@ void DrawGraph(
 
             // Map from (posY + height, posY) and (minV, maxV)
             float x = posX + (float)i / (CB_CAPACITY - 1) * width;
-            float y = posY + (1.0f - (value - minV) / (maxV - minV)) * height;
+            float y = posY + (1.0f - (value - out_min) / (out_max - out_min)) * height;
 
             points[i] = (Vector2) {
                 .x = x,
                 .y = y,
             };
         }
-        char ch_text[64] = {0};
-        sprintf(ch_text, "%u: %5.2lf", b, cbs[b]->data[cb_1->top]);
-        DrawText(ch_text, posX + 10.0 + 110.0*b, posY, text_size, cb_color[b]);
+        //char ch_text[64] = {0};
+        //sprintf(ch_text, "%u: %5.2lf", b, graph_data[b].cb.data[cb_1.top]);
+        //DrawText(ch_text, posX + 10.0 + 110.0*b, posY, text_size, cb_color[b]);
 
-        DrawLineStrip(points, CB_CAPACITY, cb_color[b]);
+        DrawLineStrip(points, CB_CAPACITY, graph_data[b].color);
     }
 }
 
@@ -637,9 +628,9 @@ int main(void) {
     i32 win_w = 1920;
     i32 win_h = 1080;
     
-    const i32 panel_size = 300;
+    const i32 left_panel_width = 300;
+    const i32 bottom_panel_height = 300;
     const i32 text_size = 24;
-    const i32 graph_height = 200;
     const i32 axis_size = 120;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
@@ -651,7 +642,7 @@ int main(void) {
     camera.fovy = 45.0f;                                // Camera field-of-view Y
     camera.projection = CAMERA_PERSPECTIVE;             // Camera mode type
 
-    RenderTexture2D viewportRT = LoadRenderTexture(win_w - panel_size, win_h);
+    RenderTexture2D viewportRT = LoadRenderTexture(win_w - left_panel_width, win_h - bottom_panel_height);
     RenderTexture2D axisRT = LoadRenderTexture(axis_size, axis_size);
 
     SetTargetFPS(60);
@@ -668,7 +659,7 @@ int main(void) {
             win_h = new_win_h;
 
             UnloadRenderTexture(viewportRT);
-            viewportRT = LoadRenderTexture(win_w - panel_size, win_h);
+            viewportRT = LoadRenderTexture(win_w - left_panel_width, win_h - bottom_panel_height);
         }
 
         if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
@@ -765,8 +756,8 @@ int main(void) {
             ClearBackground((Color){ 30, 30, 30, 255 });
 
             // Draw control panel
-            DrawRectangle(0, cur_y, panel_size, win_h, Fade(LIGHTGRAY, 0.3f));
-            DrawRectangleLines(0, cur_y, panel_size, win_h, Fade(LIGHTGRAY, 0.7f));
+            DrawRectangle(0, cur_y, left_panel_width, win_h, Fade(LIGHTGRAY, 0.3f));
+            DrawRectangleLines(0, cur_y, left_panel_width, win_h, Fade(LIGHTGRAY, 0.7f));
 
             int fps = GetFPS();
             char fps_txt[64];
@@ -781,19 +772,24 @@ int main(void) {
             DrawText(p_fq_txt, 10, cur_y, text_size, WHITE);
             
             cur_y += text_size;
-            if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=panel_size, .height=text_size  }, run_sim ? "Stop" : "Run")) {
+            if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=left_panel_width, .height=text_size  }, run_sim ? "Stop" : "Run")) {
                 run_sim = !run_sim;
+            }
+            
+            cur_y += text_size;
+            if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=left_panel_width, .height=text_size  }, "Step")) {
+                world_step();
             }
             
             cur_y += text_size;
             DrawLineEx(
                 (Vector2){0, cur_y},
-                (Vector2){panel_size, cur_y},
+                (Vector2){left_panel_width, cur_y},
                 2.0,
                 (Color){150, 150, 150, 255}
             );
             
-            i32 panel_center = panel_size / 2;
+            i32 panel_center = left_panel_width / 2;
 
             for (u64 i=0; i<NUM_ROT; i++) {
                 vec3 arm_d = arm_dir[i];
@@ -821,10 +817,10 @@ int main(void) {
                 DrawText(mot_txt, m_pos_x - 22, m_pos_y - 10, text_size, WHITE);
             }
             
-            cur_y += panel_size;
+            cur_y += left_panel_width;
             DrawLineEx(
                 (Vector2){0, cur_y},
-                (Vector2){panel_size, cur_y},
+                (Vector2){left_panel_width, cur_y},
                 2.0,
                 (Color){150, 150, 150, 255}
             );
@@ -865,15 +861,12 @@ int main(void) {
             cur_y += text_size;
             DrawLineEx(
                 (Vector2){0, cur_y},
-                (Vector2){panel_size, cur_y},
+                (Vector2){left_panel_width, cur_y},
                 2.0,
                 (Color){150, 150, 150, 255}
             );
             
-            DrawGraph(0, cur_y, panel_size, graph_height, &val1_cb, &val2_cb, &val3_cb);
-
-            cur_y += graph_height;
-            if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=panel_size, .height=text_size  }, "Perturbe")) {
+            if (GuiButton((Rectangle){ .x=0, .y=cur_y, .width=left_panel_width, .height=text_size  }, "Perturbe")) {
                 obj.rot.x += 0.3;
                 obj.rot.y += 0.2;
                 obj.rot.z += 0.0;
@@ -884,7 +877,7 @@ int main(void) {
                 (Rectangle){
                     0, 0,
                     (float)viewportRT.texture.width, -(float)viewportRT.texture.height },
-                (Vector2){ panel_size, 0 },
+                (Vector2){ left_panel_width, 0 },
                 WHITE
             );
 
@@ -897,6 +890,25 @@ int main(void) {
                 },
                 WHITE
             );
+            
+            GraphData gds[3] = {
+                {
+                    .cb = &val1_cb,
+                    .color = RED,
+                    .name = "CH1"
+                },
+                {
+                    .cb = &val2_cb,
+                    .color = GREEN,
+                    .name = "CH2"
+                },
+                {
+                    .cb = &val3_cb,
+                    .color = BLUE,
+                    .name = "CH3"
+                }
+            };
+            DrawGraph(left_panel_width, win_h - bottom_panel_height, win_w - left_panel_width, bottom_panel_height, gds, 3);
 
             //char prs_txt[64];
             //sprintf(prs_txt, "P: %u", ctr_intr.pressure);
