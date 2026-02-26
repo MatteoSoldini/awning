@@ -129,7 +129,21 @@ void cb_push(CircularBuffer *cb, f64 a) {
     cb->data[cb->top] = a;
 }
 
-CircularBuffer cbs[DBG_NUM] = {0};
+CircularBuffer ctr_dbg_cbs[DBG_NUM] = {0};
+
+enum {
+    DBG_REAL_POS_X,
+    DBG_REAL_POS_Y,
+    DBG_REAL_POS_Z,
+    DBG_REAL_VEL_X,
+    DBG_REAL_VEL_Y,
+    DBG_REAL_VEL_Z,
+    DBG_REAL_ORI_X,
+    DBG_REAL_ORI_Y,
+    DBG_REAL_ORI_Z,
+    DBG_REAL_NUM,
+};
+CircularBuffer sim_cbs[DBG_REAL_NUM] = {0};
 
 const f64 p_freq = 1000.0; // Hz
 const f64 p_dt = 1.0 / p_freq;
@@ -409,6 +423,8 @@ void world_step() {
     if (world_counter % world_timers[GNSS_TIMER] == 0) {
         ctr_intr.pos_x = (i32)((obj.pos.x + (gnss_pos_sdev * rand_gauss())) * 100);
         ctr_intr.pos_y = (i32)((obj.pos.y + (gnss_pos_sdev * rand_gauss())) * 100);
+        ctr_intr.vel_x = obj.vel.x + (gnss_vel_sdev * rand_gauss());
+        ctr_intr.vel_y = obj.vel.y + (gnss_vel_sdev * rand_gauss());
     }
     
     if (world_counter % world_timers[MAG_TIMER] == 0) {
@@ -425,11 +441,22 @@ void world_step() {
     }
     
     if (world_counter % world_timers[CTR_DBG_TIMER] == 0) {
-        vec3 obj_angles = quat_to_euler_zyx(&obj.ori);
-
         for (u64 i=0; i<DBG_NUM; i++) {
-            cb_push(&cbs[i], ctr_intr.dbg[i]);
+            cb_push(&ctr_dbg_cbs[i], ctr_intr.dbg[i]);
         }
+        
+        cb_push(&sim_cbs[DBG_REAL_POS_X], obj.pos.x);
+        cb_push(&sim_cbs[DBG_REAL_POS_Y], obj.pos.y);
+        cb_push(&sim_cbs[DBG_REAL_POS_Z], obj.pos.z);
+        
+        cb_push(&sim_cbs[DBG_REAL_VEL_X], obj.vel.x);
+        cb_push(&sim_cbs[DBG_REAL_VEL_Y], obj.vel.y);
+        cb_push(&sim_cbs[DBG_REAL_VEL_Z], obj.vel.z);
+
+        vec3 obj_angles = quat_to_euler_zyx(&obj.ori);
+        cb_push(&sim_cbs[DBG_REAL_ORI_X], obj_angles.x);
+        cb_push(&sim_cbs[DBG_REAL_ORI_Y], obj_angles.y);
+        cb_push(&sim_cbs[DBG_REAL_ORI_Z], obj_angles.z);
     }
 }
 
@@ -563,6 +590,10 @@ void DrawGraph(
         //DrawText(ch_text, posX + 10.0 + 110.0*b, posY, text_size, cb_color[b]);
 
         DrawLineStrip(points, CB_CAPACITY, graph_data[b].color);
+        
+        f64 value = cb->data[cb->top];
+        f64 y = posY + (1.0f - (value - out_min) / (out_max - out_min)) * height;
+        DrawCircle(posX + width, y, 5.0, graph_data[b].color);
     }
 }
 
@@ -891,24 +922,26 @@ int main(void) {
                 WHITE
             );
             
-            GraphData gds[3] = {
+            #define MAX_GDS 6
+            int num_gds = 3;
+            GraphData gds[MAX_GDS] = {
                 {
-                    .cb = &val1_cb,
+                    .cb = &ctr_dbg_cbs[DBG_IN_VEL_X],
                     .color = RED,
                     .name = "CH1"
                 },
                 {
-                    .cb = &val2_cb,
-                    .color = GREEN,
+                    .cb = &ctr_dbg_cbs[DBG_VEL_X],
+                    .color = BLUE,
                     .name = "CH2"
                 },
                 {
-                    .cb = &val3_cb,
-                    .color = BLUE,
-                    .name = "CH3"
+                    .cb = &sim_cbs[DBG_REAL_VEL_X],
+                    .color = YELLOW,
+                    .name = "CH4"
                 }
             };
-            DrawGraph(left_panel_width, win_h - bottom_panel_height, win_w - left_panel_width, bottom_panel_height, gds, 3);
+            DrawGraph(left_panel_width, win_h - bottom_panel_height, win_w - left_panel_width, bottom_panel_height, gds, num_gds);
 
             //char prs_txt[64];
             //sprintf(prs_txt, "P: %u", ctr_intr.pressure);

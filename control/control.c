@@ -123,33 +123,33 @@ f64 pid_step(
 
 
 PIDParams mot_pid_p = {
-    .p = 0.2,
-    .i = 0.0,
-    .d = 0.01,
+    .p = 0.4,
+    .i = 0.01,
+    .d = 0.0,
     .dt = c_dt,
-    .high = 0.5,
-    .low = -0.5
+    .high = 0.3,
+    .low = -0.3
 };
 PIDState mot_pid_s = {0};
 
-PIDParams alt_pid_p = {
-    .p = 2.0,
+PIDParams vel_z_pid_p = {
+    .p = 0.1,
     .i = 0.0,
-    .d = 0.5,
+    .d = 0.0,
     .dt = c_dt,
-    .high = 1.0,
-    .low = -1.0
+    .high = 0.5,
+    .low = -0.5
 };
 PIDState alt_pid_s = {0};
 
 // pos -> vel
 PIDParams pos_pid_p = {
-    .p = 0.1,
+    .p = 1e-2,
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
-    .high = 0.5,    // m/s
-    .low = -0.5     // m/s
+    .high = 0.25,    // m/s
+    .low = -0.25     // m/s
 };
 PIDState pos_x_pid_s = {0};
 PIDState pos_y_pid_s = {0};
@@ -225,19 +225,19 @@ PIDState rot_z_pid_s = {0};
     MAT_AT(M, r0+2, c0+2) = val;
 
 enum {
-    S_POS_X,   // m
-    S_POS_Y,   // m
-    S_POS_Z,   // m
-    S_VEL_X,   // m/s
-    S_VEL_Y,   // m/s
-    S_VEL_Z,   // m/s
+    S_POS_X,        // m
+    S_POS_Y,        // m
+    S_POS_Z,        // m
+    S_VEL_X,        // m/s
+    S_VEL_Y,        // m/s
+    S_VEL_Z,        // m/s
     S_QUAT_R,
     S_QUAT_I,
     S_QUAT_J,
     S_QUAT_K,
-    S_OMEGA_X, // rad/s
-    S_OMEGA_Y, // rad/s
-    S_OMEGA_Z, // rad/s
+    S_OMEGA_X,      // rad/s
+    S_OMEGA_Y,      // rad/s
+    S_OMEGA_Z,      // rad/s
     S_STATE_DIM
 };
 
@@ -453,6 +453,15 @@ void c_init() {
 }
 
 void ekf_predict(f64 thrust) {
+    // P = J(X) P J(X)' + Q
+    Mat Jx = J(X, thrust);
+    P = mat_mul(&Jx, &P);
+
+    Mat Jx_t = mat_trans(&Jx);
+    P = mat_mul(&P, &Jx_t);
+
+    P = mat_sum(&P, &Q);
+    
     // X = F(X)
     Mat new_X = F(X, thrust);
    
@@ -473,15 +482,6 @@ void ekf_predict(f64 thrust) {
 #endif
 
     X = new_X;
-
-    // P = J(X) P J(X)' + Q
-    Mat Jx = J(X, thrust);
-    P = mat_mul(&Jx, &P);
-
-    Mat Jx_t = mat_trans(&Jx);
-    P = mat_mul(&P, &Jx_t);
-
-    P = mat_sum(&P, &Q);
 }
 
 // --- Observation Functions ---
@@ -669,17 +669,21 @@ Mat H_rot(Mat *X) {
     return J;
 }
 
-Mat h_posXY(Mat *X) {
-    return (Mat) { .r=2, .c=1, {
+Mat h_gnss(Mat *X) {
+    return (Mat) { .r=4, .c=1, {
         MAT_AT(*X, S_POS_X, 0),
         MAT_AT(*X, S_POS_Y, 0),
+        MAT_AT(*X, S_VEL_X, 0),
+        MAT_AT(*X, S_VEL_Y, 0),
     }};
 }
 
-Mat H_posXY(Mat *X) {
-    Mat J = { .r=2, .c=S_STATE_DIM };
+Mat H_gnss(Mat *X) {
+    Mat J = { .r=4, .c=S_STATE_DIM };
     MAT_AT(J, 0, S_POS_X) = 1.0;
     MAT_AT(J, 1, S_POS_Y) = 1.0;
+    MAT_AT(J, 2, S_VEL_X) = 1.0;
+    MAT_AT(J, 3, S_VEL_Y) = 1.0;
     
     return J;
 }
@@ -946,7 +950,7 @@ void c_step(ControllerInterface *intr) {
         intr->dbg[DBG_IN_ACC_Z] = az;
 #endif
         f64 mag = sqrt(ax*ax + ay*ay + az*az); 
-        if (fabs(mag - G) < 0.2*G) {
+        if (fabs(mag - G) < 0.1*G && fabs(ax) < 0.1*G && fabs(ay) < 0.1*G) {
             Mat Z = { .r=3, .c=1, {
                 ax,
                 ay,
@@ -1003,26 +1007,39 @@ void c_step(ControllerInterface *intr) {
     if (gnss_l >= gnss_loops) {
         gnss_l=0;
 
-        f64 pos_x = intr->pos_x / 100.0;
-        f64 pos_y = intr->pos_y / 100.0;
+        f64 px = intr->pos_x / 100.0;
+        f64 py = intr->pos_y / 100.0;
+
+        f64 vx = intr->vel_x;
+        f64 vy = intr->vel_y;
 
 #ifdef CONTROL_DEBUG
-        intr->dbg[DBG_IN_POS_X] = pos_x;
-        intr->dbg[DBG_IN_POS_Y] = pos_y;
+        intr->dbg[DBG_IN_POS_X] = px;
+        intr->dbg[DBG_IN_POS_Y] = py;
+        intr->dbg[DBG_IN_VEL_X] = vx;
+        intr->dbg[DBG_IN_VEL_Y] = vy;
 #endif
 
-        Mat Z = { .r=2, .c=1, {
-            pos_x,
-            pos_y,
+        Mat Z = { .r=4, .c=1, {
+            px,
+            py,
+            vx,
+            vy,
         }};
 
-        const f64 gnss_pos_sdev = 10; //2.5; // m
+        const f64 gnss_pos_sdev = 50; //2.5; // m
         const f64 gnss_pos_var = gnss_pos_sdev * gnss_pos_sdev;   // m^2
+
+        const f64 gnss_vel_sdev = 0.05; // m/s
+        const f64 gnss_vel_var = gnss_vel_sdev * gnss_vel_sdev;
+
         Mat R = { .r=Z.r, .c=Z.r };
         MAT_AT(R, 0, 0) = gnss_pos_var;
         MAT_AT(R, 1, 1) = gnss_pos_var;
+        MAT_AT(R, 2, 2) = gnss_vel_var;
+        MAT_AT(R, 3, 3) = gnss_vel_var;
 
-        ekf_correct(&Z, h_posXY, H_posXY, &R);
+        ekf_correct(&Z, h_gnss, H_gnss, &R);
     }
 
     // --- Magnetometer ---
@@ -1078,15 +1095,15 @@ void c_step(ControllerInterface *intr) {
     
     // hover
     f64 tgt_alt = 10.0; // m
-    f64 tgt_vel = pid_step(X.data[S_POS_Z], tgt_alt, &alt_pid_p, &alt_pid_s);
+    f64 vel_z_tgt = pid_step(X.data[S_POS_Z], tgt_alt, &vel_z_pid_p, &alt_pid_s);
 
     // Since we have all the initial parameters, we could compute the hovering cmd:
-    // NUM_ARMS * (hover_cmd*max_rot_w)^2 * kf = g
-    // sqrt(g / (NUM_ARMS * kf)) / max_rot_w = hover_cmd
+    // NUM_ARMS * (hover_cmd*max_rot_w)^2 * kf / m = g
+    // (hover_cmd*max_rot_w)^2 = g / (NUM_ROT * kf) * m
+    // sqrt(g * m / (NUM_ROT * kf)) / max_rot_w = hover_cmd
 
-    const f64 hover_cmd =  sqrt(G / (NUM_ROT*kf)) / rot_max_w;
-
-    f64 out_cmd = hover_cmd + pid_step(X.data[S_VEL_Z], tgt_vel, &mot_pid_p, &mot_pid_s);
+    const f64 hover_cmd =  sqrt(G * mass / (NUM_ROT*kf)) / rot_max_w;
+    f64 out_cmd = hover_cmd + pid_step(X.data[S_VEL_Z], vel_z_tgt, &mot_pid_p, &mot_pid_s);
 
     // pos -> vel
     f64 vel_x_tgt = pid_step(X.data[S_POS_X], 0.0, &pos_pid_p, &pos_x_pid_s);
@@ -1135,14 +1152,18 @@ void c_step(ControllerInterface *intr) {
     intr->rot_cmd[3] = clamp(out_cmd - x_cmd + y_cmd - z_cmd, 0.0, 1.0);
 
 #ifdef CONTROL_DEBUG
-    intr->dbg[DBG_X_CMD] = x_cmd;
-    intr->dbg[DBG_Y_CMD] = y_cmd;
+    intr->dbg[DBG_HOVER_CMD] = out_cmd;
+    intr->dbg[DBG_X_CMD] =     x_cmd;
+    intr->dbg[DBG_Y_CMD] =     y_cmd;
+    intr->dbg[DBG_Z_CMD] =     z_cmd;
+    
     intr->dbg[DBG_ROT_X_TGT] = rot_x_tgt;
     intr->dbg[DBG_ROT_Y_TGT] = rot_y_tgt;
     intr->dbg[DBG_ORI_X_TGT] = ori_x_tgt;
     intr->dbg[DBG_ORI_Y_TGT] = ori_y_tgt;
     intr->dbg[DBG_VEL_X_TGT] = vel_x_tgt;
     intr->dbg[DBG_VEL_Y_TGT] = vel_y_tgt;
+    intr->dbg[DBG_VEL_Z_TGT] = vel_z_tgt;
     
     // State vector
     intr->dbg[DBG_POS_X] = X.data[S_POS_X];
@@ -1157,11 +1178,22 @@ void c_step(ControllerInterface *intr) {
     intr->dbg[DBG_ORI_Y] = ori.y;
     intr->dbg[DBG_ORI_Z] = ori.z;
     
-    intr->dbg[DBG_ROT_X] = X.data[S_OMEGA_X];
-    intr->dbg[DBG_ROT_Y] = X.data[S_OMEGA_Y];
-    intr->dbg[DBG_ROT_Z] = X.data[S_OMEGA_Z];
+    intr->dbg[DBG_OMEGA_X] = X.data[S_OMEGA_X];
+    intr->dbg[DBG_OMEGA_Y] = X.data[S_OMEGA_Y];
+    intr->dbg[DBG_OMEGA_Z] = X.data[S_OMEGA_Z];
 
     // Covariance vector
+    intr->dbg[DBG_COV_VEL_X] = MAT_AT(P, S_VEL_X, S_VEL_X);
+    intr->dbg[DBG_COV_VEL_Y] = MAT_AT(P, S_VEL_Y, S_VEL_Y);
+    intr->dbg[DBG_COV_VEL_Z] = MAT_AT(P, S_VEL_Z, S_VEL_Z);
+    
+    intr->dbg[DBG_COV_QUAT_R] = MAT_AT(P, S_QUAT_R, S_QUAT_R);
+    intr->dbg[DBG_COV_QUAT_I] = MAT_AT(P, S_QUAT_I, S_QUAT_I);
+    intr->dbg[DBG_COV_QUAT_J] = MAT_AT(P, S_QUAT_J, S_QUAT_J);
+    intr->dbg[DBG_COV_QUAT_K] = MAT_AT(P, S_QUAT_K, S_QUAT_K);
+    
+    intr->dbg[DBG_COV_OMEGA_X] = MAT_AT(P, S_OMEGA_X, S_OMEGA_X);
     intr->dbg[DBG_COV_OMEGA_Y] = MAT_AT(P, S_OMEGA_Y, S_OMEGA_Y);
+    intr->dbg[DBG_COV_OMEGA_Z] = MAT_AT(P, S_OMEGA_Z, S_OMEGA_Z);
 #endif
 }
