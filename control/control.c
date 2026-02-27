@@ -46,9 +46,9 @@ f64 imu_acc_to_ms2(i16 raw_acc) {
     return ((f64)raw_acc / (f64)INT16_MAX) * imu_acc_max_value; 
 }
 
-static const f64 imu_rot_max_value = 250.0; // rad/s
+static const f64 imu_gyro_max_value = 250.0; // rad/s
 f64 imu_gyro_to_rad(i16 raw_gyro) {
-    return ((f64)raw_gyro / (f64)INT16_MAX) * imu_rot_max_value; 
+    return ((f64)raw_gyro / (f64)INT16_MAX) * imu_gyro_max_value; 
 }
 
 // Magnetometer
@@ -235,9 +235,12 @@ enum {
     S_QUAT_I,
     S_QUAT_J,
     S_QUAT_K,
-    S_OMEGA_X,      // rad/s
-    S_OMEGA_Y,      // rad/s
-    S_OMEGA_Z,      // rad/s
+    //S_OMEGA_X,      // rad/s
+    //S_OMEGA_Y,      // rad/s
+    //S_OMEGA_Z,      // rad/s
+    S_OMEGA_BIAS_X,
+    S_OMEGA_BIAS_Y,
+    S_OMEGA_BIAS_Z,
     S_STATE_DIM
 };
 
@@ -251,11 +254,16 @@ enum {
 
 Mat X = { .r=S_STATE_DIM, .c=1 };
 
-Mat F(Mat Xp, f64 thrust) {
+Mat F(Mat Xp, vec3 gyro_meas, f64 thrust) {
     // Orientation integration
     // q += q 1/2 wq dt
     quat q = QUAT_FROM_STATE(Xp);
-    quat w = {0, Xp.data[S_OMEGA_X], Xp.data[S_OMEGA_Y], Xp.data[S_OMEGA_Z]};
+    vec3 omega = {
+        gyro_meas.x - Xp.data[S_OMEGA_BIAS_X],
+        gyro_meas.y - Xp.data[S_OMEGA_BIAS_Y],
+        gyro_meas.z - Xp.data[S_OMEGA_BIAS_Z]
+    };
+    quat w = { 0, omega.x, omega.y, omega.z };
     //quat w = {0, 0.0, 0.0, 0.0};
     quat dq = quat_mul(&q, &w);
     
@@ -281,14 +289,20 @@ Mat F(Mat Xp, f64 thrust) {
         q.i,
         q.j,
         q.k,
-        Xp.data[S_OMEGA_X],                                              // rot_x
-        Xp.data[S_OMEGA_Y],                                              // rot_y
-        Xp.data[S_OMEGA_Z]                                               // rot_z
+        Xp.data[S_OMEGA_BIAS_X],
+        Xp.data[S_OMEGA_BIAS_Y],
+        Xp.data[S_OMEGA_BIAS_Z]
     }};
 }
 
-Mat J(Mat Xp, f64 thrust) {
+Mat J(Mat Xp, vec3 gyro_meas, f64 thrust) {
     f64 baz = thrust/mass;
+    
+    vec3 omega = {
+        gyro_meas.x - Xp.data[S_OMEGA_BIAS_X],
+        gyro_meas.y - Xp.data[S_OMEGA_BIAS_Y],
+        gyro_meas.z - Xp.data[S_OMEGA_BIAS_Z]
+    };
 
     Mat J = { .r=S_STATE_DIM, .c=S_STATE_DIM };
     
@@ -358,49 +372,49 @@ Mat J(Mat Xp, f64 thrust) {
     // --- Orientation ---
     // wq = [0, rx, ry, rz]
     // q = q + 1/2 q wq dt
-    //     | qr + (-qi rx - qj ry - qk rz) 0.5 dt |
-    //   = | qi + ( qr rx + qj rz - qk ry) 0.5 dt |
-    //     | qj + ( qr ry - qi rz + qk rx) 0.5 dt |
-    //     | qk + ( qr rz + qi ry - qj rx) 0.5 dt |
+    //     | qr + (-qi (rx - bx) - qj (ry - by) - qk (rz - bz)) 0.5 dt |
+    //   = | qi + ( qr (rx - bx) + qj (rz - bz) - qk (ry - by)) 0.5 dt |
+    //     | qj + ( qr (ry - by) - qi (rz - bz) + qk (rx - bx)) 0.5 dt |
+    //     | qk + ( qr (rz - bz) + qi (ry - by) - qj (rx - bx)) 0.5 dt |
 
     // q.r
-    MAT_AT(J, S_QUAT_R, S_QUAT_R) =  1;
-    MAT_AT(J, S_QUAT_R, S_QUAT_I) = -0.5*c_dt*Xp.data[S_OMEGA_X];
-    MAT_AT(J, S_QUAT_R, S_QUAT_J) = -0.5*c_dt*Xp.data[S_OMEGA_Y];
-    MAT_AT(J, S_QUAT_R, S_QUAT_K) = -0.5*c_dt*Xp.data[S_OMEGA_Z];
-    MAT_AT(J, S_QUAT_R, S_OMEGA_X) =  -0.5*c_dt*Xp.data[S_QUAT_I];
-    MAT_AT(J, S_QUAT_R, S_OMEGA_Y) =  -0.5*c_dt*Xp.data[S_QUAT_J];
-    MAT_AT(J, S_QUAT_R, S_OMEGA_Z) =  -0.5*c_dt*Xp.data[S_QUAT_K];
+    MAT_AT(J, S_QUAT_R, S_QUAT_R) =        1;
+    MAT_AT(J, S_QUAT_R, S_QUAT_I) =       -0.5*c_dt*omega.x;
+    MAT_AT(J, S_QUAT_R, S_QUAT_J) =       -0.5*c_dt*omega.y;
+    MAT_AT(J, S_QUAT_R, S_QUAT_K) =       -0.5*c_dt*omega.z;
+    MAT_AT(J, S_QUAT_R, S_OMEGA_BIAS_X) =  0.5*c_dt*Xp.data[S_QUAT_I];
+    MAT_AT(J, S_QUAT_R, S_OMEGA_BIAS_Y) =  0.5*c_dt*Xp.data[S_QUAT_J];
+    MAT_AT(J, S_QUAT_R, S_OMEGA_BIAS_Z) =  0.5*c_dt*Xp.data[S_QUAT_K];
 
     // q.i
-    MAT_AT(J, S_QUAT_I, S_QUAT_R) =  0.5*c_dt*Xp.data[S_OMEGA_X];
-    MAT_AT(J, S_QUAT_I, S_QUAT_I) =  1;
-    MAT_AT(J, S_QUAT_I, S_QUAT_J) =  0.5*c_dt*Xp.data[S_OMEGA_Z];
-    MAT_AT(J, S_QUAT_I, S_QUAT_K) = -0.5*c_dt*Xp.data[S_OMEGA_Y];
-    MAT_AT(J, S_QUAT_I, S_OMEGA_X) =   0.5*c_dt*Xp.data[S_QUAT_R];
-    MAT_AT(J, S_QUAT_I, S_OMEGA_Y) =  -0.5*c_dt*Xp.data[S_QUAT_K];
-    MAT_AT(J, S_QUAT_I, S_OMEGA_Z) =   0.5*c_dt*Xp.data[S_QUAT_J];
-    
+    MAT_AT(J, S_QUAT_I, S_QUAT_R) =        0.5*c_dt*omega.x;
+    MAT_AT(J, S_QUAT_I, S_QUAT_I) =        1;
+    MAT_AT(J, S_QUAT_I, S_QUAT_J) =        0.5*c_dt*omega.z;
+    MAT_AT(J, S_QUAT_I, S_QUAT_K) =       -0.5*c_dt*omega.y;
+    MAT_AT(J, S_QUAT_I, S_OMEGA_BIAS_X) = -0.5*c_dt*Xp.data[S_QUAT_R];
+    MAT_AT(J, S_QUAT_I, S_OMEGA_BIAS_Y) =  0.5*c_dt*Xp.data[S_QUAT_K];
+    MAT_AT(J, S_QUAT_I, S_OMEGA_BIAS_Z) = -0.5*c_dt*Xp.data[S_QUAT_J];
+
     // q.j
-    MAT_AT(J, S_QUAT_J, S_QUAT_R) =  0.5*c_dt*Xp.data[S_OMEGA_Y];
-    MAT_AT(J, S_QUAT_J, S_QUAT_I) = -0.5*c_dt*Xp.data[S_OMEGA_Z];
-    MAT_AT(J, S_QUAT_J, S_QUAT_J) =  1;
-    MAT_AT(J, S_QUAT_J, S_QUAT_K) =  0.5*c_dt*Xp.data[S_OMEGA_X];
-    MAT_AT(J, S_QUAT_J, S_OMEGA_X) =   0.5*c_dt*Xp.data[S_QUAT_K];
-    MAT_AT(J, S_QUAT_J, S_OMEGA_Y) =   0.5*c_dt*Xp.data[S_QUAT_R];
-    MAT_AT(J, S_QUAT_J, S_OMEGA_Z) =  -0.5*c_dt*Xp.data[S_QUAT_I];
+    MAT_AT(J, S_QUAT_J, S_QUAT_R) =        0.5*c_dt*omega.y;
+    MAT_AT(J, S_QUAT_J, S_QUAT_I) =       -0.5*c_dt*omega.z;
+    MAT_AT(J, S_QUAT_J, S_QUAT_J) =        1;
+    MAT_AT(J, S_QUAT_J, S_QUAT_K) =        0.5*c_dt*omega.x;
+    MAT_AT(J, S_QUAT_J, S_OMEGA_BIAS_X) = -0.5*c_dt*Xp.data[S_QUAT_K];
+    MAT_AT(J, S_QUAT_J, S_OMEGA_BIAS_Y) = -0.5*c_dt*Xp.data[S_QUAT_R];
+    MAT_AT(J, S_QUAT_J, S_OMEGA_BIAS_Z) =  0.5*c_dt*Xp.data[S_QUAT_I];
 
     // q.k
-    MAT_AT(J, S_QUAT_K, S_QUAT_R) =  0.5*c_dt*Xp.data[S_OMEGA_Z];
-    MAT_AT(J, S_QUAT_K, S_QUAT_I) =  0.5*c_dt*Xp.data[S_OMEGA_Y];
-    MAT_AT(J, S_QUAT_K, S_QUAT_J) = -0.5*c_dt*Xp.data[S_OMEGA_X];
-    MAT_AT(J, S_QUAT_K, S_QUAT_K) =  1;
-    MAT_AT(J, S_QUAT_K, S_OMEGA_X) =  -0.5*c_dt*Xp.data[S_QUAT_J];
-    MAT_AT(J, S_QUAT_K, S_OMEGA_Y) =   0.5*c_dt*Xp.data[S_QUAT_I];
-    MAT_AT(J, S_QUAT_K, S_OMEGA_Z) =   0.5*c_dt*Xp.data[S_QUAT_R];
+    MAT_AT(J, S_QUAT_K, S_QUAT_R) =        0.5*c_dt*omega.z;
+    MAT_AT(J, S_QUAT_K, S_QUAT_I) =        0.5*c_dt*omega.y;
+    MAT_AT(J, S_QUAT_K, S_QUAT_J) =       -0.5*c_dt*omega.x;
+    MAT_AT(J, S_QUAT_K, S_QUAT_K) =        1;
+    MAT_AT(J, S_QUAT_K, S_OMEGA_BIAS_X) =  0.5*c_dt*Xp.data[S_QUAT_J];
+    MAT_AT(J, S_QUAT_K, S_OMEGA_BIAS_Y) = -0.5*c_dt*Xp.data[S_QUAT_I];
+    MAT_AT(J, S_QUAT_K, S_OMEGA_BIAS_Z) = -0.5*c_dt*Xp.data[S_QUAT_R];
 
-    // --- Rotation ---
-    SET_XYZ(J, S_OMEGA_X, S_OMEGA_X, 1);    // Constant
+    // --- Omega ---
+    SET_XYZ(J, S_OMEGA_BIAS_X, S_OMEGA_BIAS_X, 1);    // Constant
 
     return J;
 }
@@ -444,17 +458,19 @@ void c_init() {
     MAT_AT(Q, S_QUAT_K, S_QUAT_K) = 1e-4;
     
 
-    // --- Rotation ---
+    // --- Omega ---
     // State covariance matrix
-    SET_XYZ(P, S_OMEGA_X, S_OMEGA_X, 1e0);
+    SET_XYZ(P, S_OMEGA_BIAS_X, S_OMEGA_BIAS_X, 1e-2);
     
     // Process covariance matrix
-    SET_XYZ(Q, S_OMEGA_X, S_OMEGA_X, 1e-5);
+    f64 gyro_bias_sdev = 0.05 * DEG2RAD; //0.005 * DEG2RAD;
+    f64 gyro_bias_var = gyro_bias_sdev * gyro_bias_sdev;
+    SET_XYZ(Q, S_OMEGA_BIAS_X, S_OMEGA_BIAS_X, gyro_bias_var);
 }
 
-void ekf_predict(f64 thrust) {
+void ekf_predict(vec3 gyro_meas, f64 thrust) {
     // P = J(X) P J(X)' + Q
-    Mat Jx = J(X, thrust);
+    Mat Jx = J(X, gyro_meas, thrust);
     P = mat_mul(&Jx, &P);
 
     Mat Jx_t = mat_trans(&Jx);
@@ -463,7 +479,7 @@ void ekf_predict(f64 thrust) {
     P = mat_sum(&P, &Q);
     
     // X = F(X)
-    Mat new_X = F(X, thrust);
+    Mat new_X = F(X, gyro_meas, thrust);
    
 #ifndef NDEBUG
     Mat I = mat_sub(&new_X, &X);
@@ -652,22 +668,26 @@ Mat H_alt(Mat *X) {
     return J;
 }
 
-Mat h_rot(Mat *X) {
-    return (Mat) { .r=3, .c=1, {
-        MAT_AT(*X, S_OMEGA_X, 0),
-        MAT_AT(*X, S_OMEGA_Y, 0),
-        MAT_AT(*X, S_OMEGA_Z, 0),
-    }};
-}
-
-Mat H_rot(Mat *X) {
-    Mat J = { .r=3, .c=S_STATE_DIM };
-    MAT_AT(J, 0, S_OMEGA_X) = 1.0;
-    MAT_AT(J, 1, S_OMEGA_Y) = 1.0;
-    MAT_AT(J, 2, S_OMEGA_Z) = 1.0;
-    
-    return J;
-}
+//Mat h_rot(Mat *X) {
+//    return (Mat) { .r=3, .c=1, {
+//        MAT_AT(*X, S_OMEGA_X, 0) + MAT_AT(*X, S_OMEGA_BIAS_X, 0),
+//        MAT_AT(*X, S_OMEGA_Y, 0) + MAT_AT(*X, S_OMEGA_BIAS_Y, 0),
+//        MAT_AT(*X, S_OMEGA_Z, 0) + MAT_AT(*X, S_OMEGA_BIAS_Z, 0),
+//    }};
+//}
+//
+//Mat H_rot(Mat *X) {
+//    Mat J = { .r=3, .c=S_STATE_DIM };
+//    MAT_AT(J, 0, S_OMEGA_X) = 1.0;
+//    MAT_AT(J, 1, S_OMEGA_Y) = 1.0;
+//    MAT_AT(J, 2, S_OMEGA_Z) = 1.0;
+//    
+//    MAT_AT(J, 0, S_OMEGA_BIAS_X) = 1.0;
+//    MAT_AT(J, 1, S_OMEGA_BIAS_Y) = 1.0;
+//    MAT_AT(J, 2, S_OMEGA_BIAS_Z) = 1.0;
+//    
+//    return J;
+//}
 
 Mat h_gnss(Mat *X) {
     return (Mat) { .r=4, .c=1, {
@@ -887,6 +907,8 @@ u64 mag_l = 0;
 
 f64 c_rot_w[NUM_ROT] = {0};
 
+vec3 gyro_meas = {0};
+
 // Assume that the control_step() function is triggered by an interrupt
 // in the MCU every 1ms (1000Hz)
 void c_step(ControllerInterface *intr) {
@@ -908,7 +930,7 @@ void c_step(ControllerInterface *intr) {
         tot_mot_f += kf * c_rot_w[i] * c_rot_w[i];
     }
     
-    ekf_predict(tot_mot_f);
+    ekf_predict(gyro_meas, tot_mot_f);
 
     // --- Read sensors ---
     // --- Barometer ---
@@ -977,30 +999,35 @@ void c_step(ControllerInterface *intr) {
         // this even stable?)
 
         // World-frame accelerations
-        f64 gyro_rate_x = imu_gyro_to_rad(intr->imu_rot_x);
-        f64 gyro_rate_y = imu_gyro_to_rad(intr->imu_rot_y);
-        f64 gyro_rate_z = imu_gyro_to_rad(intr->imu_rot_z);
+        f64 gyro_rate_x = intr->imu_gyro_x;
+        f64 gyro_rate_y = intr->imu_gyro_y;
+        f64 gyro_rate_z = intr->imu_gyro_z;
 
 #ifdef CONTROL_DEBUG
         intr->dbg[DBG_IN_ROT_X] = gyro_rate_x;
         intr->dbg[DBG_IN_ROT_Y] = gyro_rate_y;
         intr->dbg[DBG_IN_ROT_Z] = gyro_rate_z;
 #endif
-
-        Mat Z = { .r=3, .c=1, {
+        gyro_meas = (vec3) {
             gyro_rate_x,
             gyro_rate_y,
             gyro_rate_z
-        }};
+        };
 
-        f64 gyro_sdev = 0.05*DEG2RAD;
+        //Mat Z = { .r=3, .c=1, {
+        //    gyro_rate_x,
+        //    gyro_rate_y,
+        //    gyro_rate_z
+        //}};
 
-        Mat R = { .r=Z.r, .c=Z.r };
-        MAT_AT(R, 0, 0) = gyro_sdev*gyro_sdev;
-        MAT_AT(R, 1, 1) = gyro_sdev*gyro_sdev;
-        MAT_AT(R, 2, 2) = gyro_sdev*gyro_sdev;
+        //f64 gyro_sdev = 0.05*DEG2RAD;
 
-        ekf_correct(&Z, h_rot, H_rot, &R);
+        //Mat R = { .r=Z.r, .c=Z.r };
+        //MAT_AT(R, 0, 0) = gyro_sdev*gyro_sdev;
+        //MAT_AT(R, 1, 1) = gyro_sdev*gyro_sdev;
+        //MAT_AT(R, 2, 2) = gyro_sdev*gyro_sdev;
+
+        //ekf_correct(&Z, h_rot, H_rot, &R);
     }
     
     // --- GNSS ---
@@ -1138,9 +1165,15 @@ void c_step(ControllerInterface *intr) {
     //);
 
     // rot -> cmd
-    f64 x_cmd = pid_step(X.data[S_OMEGA_X], rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
-    f64 y_cmd = pid_step(X.data[S_OMEGA_Y], rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
-    f64 z_cmd = pid_step(X.data[S_OMEGA_Z], rot_z_tgt, &rot_z_pid_p, &rot_z_pid_s);
+    vec3 omega = {
+        gyro_meas.x - X.data[S_OMEGA_BIAS_X],
+        gyro_meas.y - X.data[S_OMEGA_BIAS_Y],
+        gyro_meas.z - X.data[S_OMEGA_BIAS_Z],
+    };
+
+    f64 x_cmd = pid_step(omega.x, rot_x_tgt, &rot_pid_p, &rot_x_pid_s);
+    f64 y_cmd = pid_step(omega.y, rot_y_tgt, &rot_pid_p, &rot_y_pid_s);
+    f64 z_cmd = pid_step(omega.z, rot_z_tgt, &rot_z_pid_p, &rot_z_pid_s);
 
     // --- Motor mixer ---
 
@@ -1178,9 +1211,13 @@ void c_step(ControllerInterface *intr) {
     intr->dbg[DBG_ORI_Y] = ori.y;
     intr->dbg[DBG_ORI_Z] = ori.z;
     
-    intr->dbg[DBG_OMEGA_X] = X.data[S_OMEGA_X];
-    intr->dbg[DBG_OMEGA_Y] = X.data[S_OMEGA_Y];
-    intr->dbg[DBG_OMEGA_Z] = X.data[S_OMEGA_Z];
+    intr->dbg[DBG_OMEGA_X] = omega.x; //X.data[S_OMEGA_X];
+    intr->dbg[DBG_OMEGA_Y] = omega.y; //X.data[S_OMEGA_Y];
+    intr->dbg[DBG_OMEGA_Z] = omega.z; //X.data[S_OMEGA_Z];
+    
+    intr->dbg[DBG_OMEGA_BIAS_X] = X.data[S_OMEGA_BIAS_X]; //X.data[S_OMEGA_X];
+    intr->dbg[DBG_OMEGA_BIAS_Y] = X.data[S_OMEGA_BIAS_Y]; //X.data[S_OMEGA_Y];
+    intr->dbg[DBG_OMEGA_BIAS_Z] = X.data[S_OMEGA_BIAS_Z]; //X.data[S_OMEGA_Z];
 
     // Covariance vector
     intr->dbg[DBG_COV_VEL_X] = MAT_AT(P, S_VEL_X, S_VEL_X);
@@ -1192,8 +1229,8 @@ void c_step(ControllerInterface *intr) {
     intr->dbg[DBG_COV_QUAT_J] = MAT_AT(P, S_QUAT_J, S_QUAT_J);
     intr->dbg[DBG_COV_QUAT_K] = MAT_AT(P, S_QUAT_K, S_QUAT_K);
     
-    intr->dbg[DBG_COV_OMEGA_X] = MAT_AT(P, S_OMEGA_X, S_OMEGA_X);
-    intr->dbg[DBG_COV_OMEGA_Y] = MAT_AT(P, S_OMEGA_Y, S_OMEGA_Y);
-    intr->dbg[DBG_COV_OMEGA_Z] = MAT_AT(P, S_OMEGA_Z, S_OMEGA_Z);
+    //intr->dbg[DBG_COV_OMEGA_X] = MAT_AT(P, S_OMEGA_X, S_OMEGA_X);
+    //intr->dbg[DBG_COV_OMEGA_Y] = MAT_AT(P, S_OMEGA_Y, S_OMEGA_Y);
+    //intr->dbg[DBG_COV_OMEGA_Z] = MAT_AT(P, S_OMEGA_Z, S_OMEGA_Z);
 #endif
 }

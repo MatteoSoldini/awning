@@ -141,6 +141,9 @@ enum {
     DBG_REAL_ORI_X,
     DBG_REAL_ORI_Y,
     DBG_REAL_ORI_Z,
+    DBG_REAL_GYRO_BIAS_X,
+    DBG_REAL_GYRO_BIAS_Y,
+    DBG_REAL_GYRO_BIAS_Z,
     DBG_REAL_NUM,
 };
 CircularBuffer sim_cbs[DBG_REAL_NUM] = {0};
@@ -214,9 +217,7 @@ void p_step() {
     vec3 wind_acc = vec3_scale(&drag, 1.0/obj.mass);
 
     //printf("x=%lf, y=%lf, z=%lf\n", wind_acc.x, wind_acc.y, wind_acc.z);
-
-    // REVERT
-    //obj.acc = vec3_sum(&obj.acc, &wind_acc);
+    obj.acc = vec3_sum(&obj.acc, &wind_acc);
 
     // Linear integrator
     // v = v_0 + a*dt
@@ -300,8 +301,10 @@ const u64 imu_read_bits = 16;
 const f64 imu_acc_sdev = 0.00637;
 const f64 imu_acc_max_value = 8.0*G;     // m/s^2  TO CHECK
 
-const f64 imu_rot_sdev = 0.05 * DEG2RAD; // rad/s
-const f64 imu_rot_max_value = 250.0;     // rad/s  TO CHECK
+const f64 imu_gyro_sdev = 0.05 * DEG2RAD; // rad/s
+const f64 imu_gyro_max_value = 250.0;     // rad/s  TO CHECK
+vec3 imu_gyro_bias = {0};
+const f64 imu_gyro_bias_sdev = 0.005 * DEG2RAD; // rad/s
 
 // GNSS parameters
 // reference: u-blox NEO-M8N
@@ -415,9 +418,13 @@ void world_step() {
 
         // --- Gyroscope ---
         // omega_measured = omega_real + omega_bias + omega_noise
-        ctr_intr.imu_rot_x = simulate_sensor(obj.rot.x, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
-        ctr_intr.imu_rot_y = simulate_sensor(obj.rot.y, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
-        ctr_intr.imu_rot_z = simulate_sensor(obj.rot.z, imu_rot_max_value, -imu_rot_max_value, imu_rot_sdev, imu_read_bits);
+        imu_gyro_bias.x += imu_gyro_bias_sdev * rand_gauss();
+        imu_gyro_bias.y += imu_gyro_bias_sdev * rand_gauss();
+        imu_gyro_bias.z += imu_gyro_bias_sdev * rand_gauss();
+
+        ctr_intr.imu_gyro_x = obj.rot.x + imu_gyro_sdev * rand_gauss() + imu_gyro_bias.x;
+        ctr_intr.imu_gyro_y = obj.rot.y + imu_gyro_sdev * rand_gauss() + imu_gyro_bias.y;
+        ctr_intr.imu_gyro_z = obj.rot.z + imu_gyro_sdev * rand_gauss() + imu_gyro_bias.z;
     }
     
     if (world_counter % world_timers[GNSS_TIMER] == 0) {
@@ -457,6 +464,10 @@ void world_step() {
         cb_push(&sim_cbs[DBG_REAL_ORI_X], obj_angles.x);
         cb_push(&sim_cbs[DBG_REAL_ORI_Y], obj_angles.y);
         cb_push(&sim_cbs[DBG_REAL_ORI_Z], obj_angles.z);
+
+        cb_push(&sim_cbs[DBG_REAL_GYRO_BIAS_X], imu_gyro_bias.x);
+        cb_push(&sim_cbs[DBG_REAL_GYRO_BIAS_Y], imu_gyro_bias.y);
+        cb_push(&sim_cbs[DBG_REAL_GYRO_BIAS_Z], imu_gyro_bias.z);
     }
 }
 
@@ -923,22 +934,27 @@ int main(void) {
             );
             
             #define MAX_GDS 6
-            int num_gds = 3;
+            int num_gds = 4;
             GraphData gds[MAX_GDS] = {
                 {
-                    .cb = &ctr_dbg_cbs[DBG_IN_VEL_X],
+                    .cb = &sim_cbs[DBG_REAL_ORI_Y],
                     .color = RED,
                     .name = "CH1"
                 },
                 {
-                    .cb = &ctr_dbg_cbs[DBG_VEL_X],
+                    .cb = &ctr_dbg_cbs[DBG_ORI_Y],
+                    .color = YELLOW,
+                    .name = "CH4"
+                },
+                {
+                    .cb = &ctr_dbg_cbs[DBG_OMEGA_BIAS_Y],
                     .color = BLUE,
                     .name = "CH2"
                 },
                 {
-                    .cb = &sim_cbs[DBG_REAL_VEL_X],
-                    .color = YELLOW,
-                    .name = "CH4"
+                    .cb = &sim_cbs[DBG_REAL_GYRO_BIAS_Y],
+                    .color = GREEN,
+                    .name = "CH3"
                 }
             };
             DrawGraph(left_panel_width, win_h - bottom_panel_height, win_w - left_panel_width, bottom_panel_height, gds, num_gds);

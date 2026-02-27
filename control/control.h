@@ -21,6 +21,9 @@ enum DebugValue {
     DBG_OMEGA_X,
     DBG_OMEGA_Y,
     DBG_OMEGA_Z,
+    DBG_OMEGA_BIAS_X,
+    DBG_OMEGA_BIAS_Y,
+    DBG_OMEGA_BIAS_Z,
    
     // Covariance vector
     DBG_COV_VEL_X,
@@ -75,9 +78,9 @@ typedef struct {
     i16 imu_acc_x;
     i16 imu_acc_y;
     i16 imu_acc_z;
-    i16 imu_rot_x;
-    i16 imu_rot_y;
-    i16 imu_rot_z;
+    f64 imu_gyro_x;
+    f64 imu_gyro_y;
+    f64 imu_gyro_z;
     i32 pos_x;  // cm
     i32 pos_y;  // cm
     f64 vel_x;
