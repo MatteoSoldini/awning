@@ -19,22 +19,21 @@
 const f64 c_dt = 1.0 / CONTROL_FQ;
 
 typedef struct {
-    f64 x;  // m
-    f64 y;  // m
-    f64 z;  // m
+    f64 x;   // m
+    f64 y;   // m
+    f64 z;   // m
+    f64 yaw; // rad
 } Waypoint;
 
 u64 curr_wp = 0;
 #define NUM_FLIGHTPLAN_WAYPOINTS 4
 Waypoint flightplan[NUM_FLIGHTPLAN_WAYPOINTS] = {
-    { .x =  10.0, .y =  10.0, .z = 10.0 },
-    { .x = -10.0, .y =  10.0, .z = 10.0 },
-    { .x = -10.0, .y = -10.0, .z = 10.0 },
-    { .x =  10.0, .y = -10.0, .z = 10.0 }
+    { .x =  10.0, .y =  10.0, .z = 10.0, .yaw =  0.0  },
+    { .x = -10.0, .y =  10.0, .z = 10.0, .yaw =  PI/2 },
+    { .x = -10.0, .y = -10.0, .z = 10.0, .yaw =  PI   },
+    { .x =  10.0, .y = -10.0, .z = 10.0, .yaw = -PI/2 }
 };
 f64 wp_radius = 0.5; // m
-
-f64 tgt_yaw = 0.0;
 
 // Quadcopter physics
 static const f64 mass = 2.0;        // Kg
@@ -250,9 +249,6 @@ enum {
     S_QUAT_I,
     S_QUAT_J,
     S_QUAT_K,
-    //S_OMEGA_X,      // rad/s
-    //S_OMEGA_Y,      // rad/s
-    //S_OMEGA_Z,      // rad/s
     S_OMEGA_BIAS_X,
     S_OMEGA_BIAS_Y,
     S_OMEGA_BIAS_Z,
@@ -649,9 +645,6 @@ Mat H_body_north_dir(Mat *X) {
     //    = |  2 (qi qj + qk qr)  |
     //      | 1 - 2 (qi^2 + qk^2) |
     //      |  2 (qj qk - qi qr)  |
-    //    = |  2 qi qj + 2 qk qr)  |
-    //      | 1 - 2 qi^2 - 2 qk^2) |
-    //      |  2 qj qk - 2 qi qr)  |
     
     quat q = QUAT_FROM_STATE(*X);
 
@@ -662,7 +655,7 @@ Mat H_body_north_dir(Mat *X) {
     MAT_AT(J, 0, S_QUAT_K) = 2*q.r;
     
     MAT_AT(J, 1, S_QUAT_I) = -4*q.i;
-    MAT_AT(J, 1, S_QUAT_J) = -4*q.j;
+    MAT_AT(J, 1, S_QUAT_K) = -4*q.k;
     
     MAT_AT(J, 2, S_QUAT_R) = -2*q.i;
     MAT_AT(J, 2, S_QUAT_I) = -2*q.r;
@@ -1097,7 +1090,14 @@ void c_step(ControllerInterface *intr) {
             .y = intr->mag_y,
             .z = intr->mag_z
         };
+    
         vec3 mag_dir = vec3_norm(&mag);
+
+#ifdef CONTROL_DEBUG
+        intr->dbg[DBG_IN_MAG_X] = mag_dir.x;
+        intr->dbg[DBG_IN_MAG_Y] = mag_dir.y;
+        intr->dbg[DBG_IN_MAG_Z] = mag_dir.z;
+#endif    
         
         Mat Z = { .r=3, .c=1, {
             mag_dir.x,
@@ -1105,7 +1105,7 @@ void c_step(ControllerInterface *intr) {
             mag_dir.z,
         }};
 
-        const f64 mag_sdev = 1e-1;
+        const f64 mag_sdev = 1e0;
         const f64 mag_var = mag_sdev * mag_sdev;
         Mat R = { .r=Z.r, .c=Z.r };
         MAT_AT(R, 0, 0) = mag_var;
@@ -1191,9 +1191,10 @@ void c_step(ControllerInterface *intr) {
 
     // ori -> rot
     vec3 ori = quat_to_euler_zyx(&q);
-    f64 rot_x_tgt = pid_step(ori.x, ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
-    f64 rot_y_tgt = pid_step(ori.y, ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
-    f64 rot_z_tgt = pid_step(ori.z, tgt_yaw,   &ori_pid_p, &ori_z_pid_s);
+    f64 tgt_yaw = flightplan[curr_wp].yaw;
+    f64 rot_x_tgt = angle_pid_step(ori.x, ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
+    f64 rot_y_tgt = angle_pid_step(ori.y, ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
+    f64 rot_z_tgt = angle_pid_step(ori.z, tgt_yaw,   &ori_pid_p, &ori_z_pid_s);
     
     //printf("o: %lf, tr: %lf\n", ori_x, rot_x_tgt);
 

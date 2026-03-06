@@ -771,13 +771,21 @@ int main(void) {
 
                     // Draw debug accelerometer readings
                     Vector3 start = {0.0, 0.0, 0.0};
-                    vec3 end_phy = {
+                    vec3 end_acc = {
                         ctr_intr.dbg[DBG_IN_ACC_X] / 10,
                         ctr_intr.dbg[DBG_IN_ACC_Y] / 10,
                         ctr_intr.dbg[DBG_IN_ACC_Z] / 10
                     };
-                    Vector3 end = phy_to_raylib(&end_phy);
-                    DrawLine3D(start, end, BLUE);
+                    Vector3 end_acc_ray = phy_to_raylib(&end_acc);
+                    DrawLine3D(start, end_acc_ray, BLUE);
+                    
+                    vec3 end_mag = {
+                        ctr_intr.dbg[DBG_IN_MAG_X],
+                        ctr_intr.dbg[DBG_IN_MAG_Y],
+                        ctr_intr.dbg[DBG_IN_MAG_Z]
+                    };
+                    Vector3 end_mag_ray = phy_to_raylib(&end_mag);
+                    DrawLine3D(start, end_mag_ray, RED);
                 rlPopMatrix();
                 
                 // Floor tiles
