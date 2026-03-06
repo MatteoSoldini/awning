@@ -293,7 +293,7 @@ const u64 s_bit_mask = (1 << s_read_bits) - 1;
 
 // IMU parameters
 // reference: IIM42653
-// TODO: add bias
+// source: https://invensense.tdk.com/wp-content/uploads/2023/12/DS-000529-IIM-42653-v1.1.pdf
 const f64 imu_upt_fq = 200.0;
 const u64 imu_udt_mc = 1.0/imu_upt_fq * 1e6;
 const u64 imu_read_bits = 16;
@@ -304,7 +304,9 @@ const f64 imu_acc_max_value = 8.0*G;     // m/s^2  TO CHECK
 const f64 imu_gyro_sdev = 0.05 * DEG2RAD; // rad/s
 const f64 imu_gyro_max_value = 250.0;     // rad/s  TO CHECK
 vec3 imu_gyro_bias = {0};
-const f64 imu_gyro_bias_sdev = 0.005 * DEG2RAD; // rad/s
+
+// Unmodelled bias random walk (ex. temperature, mechanical, ...)
+const f64 imu_gyro_bias_random_walk = 0.5 * DEG2RAD; // rad/s / sqrt(s)
 
 // GNSS parameters
 // reference: u-blox NEO-M8N
@@ -418,9 +420,10 @@ void world_step() {
 
         // --- Gyroscope ---
         // omega_measured = omega_real + omega_bias + omega_noise
-        imu_gyro_bias.x += imu_gyro_bias_sdev * rand_gauss();
-        imu_gyro_bias.y += imu_gyro_bias_sdev * rand_gauss();
-        imu_gyro_bias.z += imu_gyro_bias_sdev * rand_gauss();
+        // omega_bias = omega_bias + q*sqrt(dt) * N(0,1)
+        imu_gyro_bias.x += imu_gyro_bias_random_walk / sqrt(imu_upt_fq) * rand_gauss();
+        imu_gyro_bias.y += imu_gyro_bias_random_walk / sqrt(imu_upt_fq) * rand_gauss();
+        imu_gyro_bias.z += imu_gyro_bias_random_walk / sqrt(imu_upt_fq) * rand_gauss();
 
         ctr_intr.imu_gyro_x = obj.rot.x + imu_gyro_sdev * rand_gauss() + imu_gyro_bias.x;
         ctr_intr.imu_gyro_y = obj.rot.y + imu_gyro_sdev * rand_gauss() + imu_gyro_bias.y;
@@ -553,9 +556,11 @@ void DrawGraph(
     DrawRectangle(posX, posY, width, height, BLACK);
 
     // Y ruler (horizontal lines)
-    i32 zero_pos_h = out_max / range * height;
-    DrawLine(posX, posY + zero_pos_h, posX + width, posY + zero_pos_h, GRAY);
-    DrawText("0", posX, posY + zero_pos_h - 10, 10, GRAY);
+    if (out_max >= 0.0 && out_min <= 0.0) {
+        i32 zero_pos_h = out_max / range * height;
+        DrawLine(posX, posY + zero_pos_h, posX + width, posY + zero_pos_h, GRAY);
+        DrawText("0", posX, posY + zero_pos_h - 10, 10, GRAY);
+    }
 
     //for (int i = 0; i <= RULER_DIVS_Y; i++) {
     //    float t = (float)i / RULER_DIVS_Y;
@@ -605,6 +610,10 @@ void DrawGraph(
         f64 value = cb->data[cb->top];
         f64 y = posY + (1.0f - (value - out_min) / (out_max - out_min)) * height;
         DrawCircle(posX + width, y, 5.0, graph_data[b].color);
+
+        char ch_text[64] = {0};
+        sprintf(ch_text, "%5.2lf", value);
+        DrawText(ch_text, posX + width - 50, y - 5.0, 16, graph_data[b].color);
     }
 }
 
@@ -937,12 +946,12 @@ int main(void) {
             int num_gds = 4;
             GraphData gds[MAX_GDS] = {
                 {
-                    .cb = &sim_cbs[DBG_REAL_ORI_Y],
+                    .cb = &sim_cbs[DBG_REAL_ORI_Z],
                     .color = RED,
                     .name = "CH1"
                 },
                 {
-                    .cb = &ctr_dbg_cbs[DBG_ORI_Y],
+                    .cb = &ctr_dbg_cbs[DBG_ORI_Z],
                     .color = YELLOW,
                     .name = "CH4"
                 },

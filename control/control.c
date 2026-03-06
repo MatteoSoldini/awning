@@ -18,6 +18,22 @@
 
 const f64 c_dt = 1.0 / CONTROL_FQ;
 
+typedef struct {
+    f64 x;  // m
+    f64 y;  // m
+    f64 z;  // m
+} Waypoint;
+
+u64 curr_wp = 0;
+#define NUM_FLIGHTPLAN_WAYPOINTS 4
+Waypoint flightplan[NUM_FLIGHTPLAN_WAYPOINTS] = {
+    { .x =  10.0, .y =  10.0, .z = 10.0 },
+    { .x = -10.0, .y =  10.0, .z = 10.0 },
+    { .x = -10.0, .y = -10.0, .z = 10.0 },
+    { .x =  10.0, .y = -10.0, .z = 10.0 }
+};
+f64 wp_radius = 0.5; // m
+
 f64 tgt_yaw = 0.0;
 
 // Quadcopter physics
@@ -121,7 +137,6 @@ f64 pid_step(
     return out;
 }
 
-
 PIDParams mot_pid_p = {
     .p = 0.4,
     .i = 0.01,
@@ -144,19 +159,19 @@ PIDState alt_pid_s = {0};
 
 // pos -> vel
 PIDParams pos_pid_p = {
-    .p = 1e-2,
+    .p = 0.5,
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
-    .high = 0.25,    // m/s
-    .low = -0.25     // m/s
+    .high = 0.5,    // m/s
+    .low = -0.5     // m/s
 };
 PIDState pos_x_pid_s = {0};
 PIDState pos_y_pid_s = {0};
 
 // vel -> ori
 PIDParams vel_pid_p = {
-    .p = 0.5,
+    .p = 0.25,
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
@@ -463,8 +478,8 @@ void c_init() {
     SET_XYZ(P, S_OMEGA_BIAS_X, S_OMEGA_BIAS_X, 1e-2);
     
     // Process covariance matrix
-    f64 gyro_bias_sdev = 0.05 * DEG2RAD; //0.005 * DEG2RAD;
-    f64 gyro_bias_var = gyro_bias_sdev * gyro_bias_sdev;
+    f64 gyro_bias_random_walk = 1e-1; //0.5 * DEG2RAD; // rad/s / sqrt(s)
+    f64 gyro_bias_var = gyro_bias_random_walk * gyro_bias_random_walk * c_dt;
     SET_XYZ(Q, S_OMEGA_BIAS_X, S_OMEGA_BIAS_X, gyro_bias_var);
 }
 
@@ -732,34 +747,34 @@ void ekf_correct(
     S = mat_mul(&S, &HX_t);
     S = mat_sum(&S, R);
     
-//    for (i32 i = 0; i < Z->r; i++) {
-//        f64 vi = fabs(MAT_AT(I, i, 0));
-//        
-//        f64 sigma = sqrt(MAT_AT(S, i, i));   // expected stddev of residual
-//        if (sigma > 1e-12 && vi > 5.0 * sigma) {
-//#ifndef NDEBUG
-//            printf("INNOV gate: i=%d I=%lf sigma=%lf (%.2f sigma)\n",
-//                   i, vi, sigma, vi/sigma);
-//            
-//            printf("DEBUG DUMP\n");
-//            printf("I: ");
-//            mat_print(&I);
-//            
-//            printf("Z: ");
-//            mat_print(Z);
-//            
-//            printf("X: ");
-//            mat_print(&X);
-//            
-//            printf("P: ");
-//            mat_print(&P);
-//            
-//            DBG_BREAK();
-//#endif
-//
-//            return; // reject update
-//        }
-//    }
+    for (i32 i = 0; i < Z->r; i++) {
+        f64 vi = fabs(MAT_AT(I, i, 0));
+        
+        f64 sigma = sqrt(MAT_AT(S, i, i));   // expected stddev of residual
+        if (sigma > 1e-12 && vi > 5.0 * sigma) {
+#ifndef NDEBUG
+            printf("INNOV gate: i=%d I=%lf sigma=%lf (%.2f sigma)\n",
+                   i, vi, sigma, vi/sigma);
+            
+            printf("DEBUG DUMP\n");
+            printf("I: ");
+            mat_print(&I);
+            
+            printf("Z: ");
+            mat_print(Z);
+            
+            printf("X: ");
+            mat_print(&X);
+            
+            printf("P: ");
+            mat_print(&P);
+            
+            DBG_BREAK();
+#endif
+
+            return; // reject update
+        }
+    }
 
     // Compute Kalman gain
     // K = P H(X)' S^-1
@@ -1054,7 +1069,7 @@ void c_step(ControllerInterface *intr) {
             vy,
         }};
 
-        const f64 gnss_pos_sdev = 50; //2.5; // m
+        const f64 gnss_pos_sdev = 25.0; //2.5; // m
         const f64 gnss_pos_var = gnss_pos_sdev * gnss_pos_sdev;   // m^2
 
         const f64 gnss_vel_sdev = 0.05; // m/s
@@ -1090,7 +1105,7 @@ void c_step(ControllerInterface *intr) {
             mag_dir.z,
         }};
 
-        const f64 mag_sdev = 1e1;
+        const f64 mag_sdev = 1e-1;
         const f64 mag_var = mag_sdev * mag_sdev;
         Mat R = { .r=Z.r, .c=Z.r };
         MAT_AT(R, 0, 0) = mag_var;
@@ -1098,6 +1113,19 @@ void c_step(ControllerInterface *intr) {
         MAT_AT(R, 2, 2) = mag_var;
 
         ekf_correct(&Z, h_body_north_dir, H_body_north_dir, &R);
+    }
+
+    // --- Flightplan ---
+    Waypoint wp = flightplan[curr_wp];
+
+    f64 distance = sqrt(
+        pow(fabs(X.data[S_POS_X] - wp.x), 2.0) + 
+        pow(fabs(X.data[S_POS_Y] - wp.y), 2.0) + 
+        pow(fabs(X.data[S_POS_Z] - wp.z), 2.0)
+    );
+
+    if (distance <= wp_radius) {
+        curr_wp = (curr_wp + 1) % NUM_FLIGHTPLAN_WAYPOINTS;
     }
 
     // --- Attitude Control --- 
@@ -1121,7 +1149,7 @@ void c_step(ControllerInterface *intr) {
     //    ccw       cw
     
     // hover
-    f64 tgt_alt = 10.0; // m
+    f64 tgt_alt = flightplan[curr_wp].z; // m
     f64 vel_z_tgt = pid_step(X.data[S_POS_Z], tgt_alt, &vel_z_pid_p, &alt_pid_s);
 
     // Since we have all the initial parameters, we could compute the hovering cmd:
@@ -1133,8 +1161,10 @@ void c_step(ControllerInterface *intr) {
     f64 out_cmd = hover_cmd + pid_step(X.data[S_VEL_Z], vel_z_tgt, &mot_pid_p, &mot_pid_s);
 
     // pos -> vel
-    f64 vel_x_tgt = pid_step(X.data[S_POS_X], 0.0, &pos_pid_p, &pos_x_pid_s);
-    f64 vel_y_tgt = pid_step(X.data[S_POS_Y], 0.0, &pos_pid_p, &pos_y_pid_s);
+    f64 tgt_pos_x = flightplan[curr_wp].x;
+    f64 tgt_pos_y = flightplan[curr_wp].y;
+    f64 vel_x_tgt = pid_step(X.data[S_POS_X], tgt_pos_x, &pos_pid_p, &pos_x_pid_s);
+    f64 vel_y_tgt = pid_step(X.data[S_POS_Y], tgt_pos_y, &pos_pid_p, &pos_y_pid_s);
 
     //printf("vx: %lf\n", vel_x_tgt);
 
@@ -1143,16 +1173,27 @@ void c_step(ControllerInterface *intr) {
     //  * +vel_x => +ori_y
     //  * +vel_y => -ori_x
 
-    f64 ori_y_tgt =  pid_step(X.data[S_VEL_X], vel_x_tgt, &vel_pid_p, &vel_y_pid_s);
-    f64 ori_x_tgt = -pid_step(X.data[S_VEL_Y], vel_y_tgt, &vel_pid_p, &vel_x_pid_s);
+    quat q = QUAT_FROM_STATE(X);
+    quat q_inv = (quat){ q.r, -q.i, -q.j, -q.k };
+    
+    vec3 world_tgt_vel = { .x=vel_x_tgt, .y=vel_y_tgt };
+    vec3 world_vel = {
+        .x=X.data[S_VEL_X],
+        .y=X.data[S_VEL_Y],
+        .z=X.data[S_VEL_Z]
+    };
+    
+    vec3 body_tgt_vel = vec3_rotate_by_quat(&world_tgt_vel, &q_inv);
+    vec3 body_vel     = vec3_rotate_by_quat(&world_vel,     &q_inv);
+
+    f64 ori_y_tgt =  pid_step(body_vel.x, body_tgt_vel.x, &vel_pid_p, &vel_y_pid_s);
+    f64 ori_x_tgt = -pid_step(body_vel.y, body_tgt_vel.y, &vel_pid_p, &vel_x_pid_s);
 
     // ori -> rot
-    quat q = QUAT_FROM_STATE(X);
     vec3 ori = quat_to_euler_zyx(&q);
     f64 rot_x_tgt = pid_step(ori.x, ori_x_tgt, &ori_pid_p, &ori_x_pid_s);
     f64 rot_y_tgt = pid_step(ori.y, ori_y_tgt, &ori_pid_p, &ori_y_pid_s);
-
-    f64 rot_z_tgt = pid_step(ori.z, tgt_yaw, &ori_pid_p, &ori_z_pid_s);
+    f64 rot_z_tgt = pid_step(ori.z, tgt_yaw,   &ori_pid_p, &ori_z_pid_s);
     
     //printf("o: %lf, tr: %lf\n", ori_x, rot_x_tgt);
 
@@ -1176,8 +1217,6 @@ void c_step(ControllerInterface *intr) {
     f64 z_cmd = pid_step(omega.z, rot_z_tgt, &rot_z_pid_p, &rot_z_pid_s);
 
     // --- Motor mixer ---
-
-
     // fl > fr > rr > rl
     intr->rot_cmd[0] = clamp(out_cmd + x_cmd + y_cmd + z_cmd, 0.0, 1.0);
     intr->rot_cmd[1] = clamp(out_cmd + x_cmd - y_cmd - z_cmd, 0.0, 1.0);
@@ -1194,6 +1233,7 @@ void c_step(ControllerInterface *intr) {
     intr->dbg[DBG_ROT_Y_TGT] = rot_y_tgt;
     intr->dbg[DBG_ORI_X_TGT] = ori_x_tgt;
     intr->dbg[DBG_ORI_Y_TGT] = ori_y_tgt;
+    intr->dbg[DBG_ORI_Z_TGT] = tgt_yaw;
     intr->dbg[DBG_VEL_X_TGT] = vel_x_tgt;
     intr->dbg[DBG_VEL_Y_TGT] = vel_y_tgt;
     intr->dbg[DBG_VEL_Z_TGT] = vel_z_tgt;

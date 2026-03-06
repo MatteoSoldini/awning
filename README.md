@@ -13,3 +13,7 @@ It’s an educational sandbox for experimenting with flight dynamics, sensor noi
 ## How it runs
 - A background thread advances simulation time, updates sensors, and runs the controller at fixed rates
 - The main thread handles rendering, camera input, and UI
+
+# References
+
+* https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-696.pdf

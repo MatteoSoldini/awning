@@ -58,6 +58,7 @@ enum DebugValue {
     DBG_ROT_Y_TGT,
     DBG_ORI_X_TGT,
     DBG_ORI_Y_TGT,
+    DBG_ORI_Z_TGT,
     DBG_HOVER_CMD,
     DBG_X_CMD,
     DBG_Y_CMD,
