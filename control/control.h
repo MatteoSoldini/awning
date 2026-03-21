@@ -15,15 +15,16 @@ enum DebugValue {
     DBG_VEL_X,
     DBG_VEL_Y,
     DBG_VEL_Z,
+    DBG_ACC_BIAS_Z,
     DBG_ORI_X,
     DBG_ORI_Y,
     DBG_ORI_Z,
     DBG_OMEGA_X,
     DBG_OMEGA_Y,
     DBG_OMEGA_Z,
-    DBG_OMEGA_BIAS_X,
-    DBG_OMEGA_BIAS_Y,
-    DBG_OMEGA_BIAS_Z,
+    DBG_GYRO_BIAS_X,
+    DBG_GYRO_BIAS_Y,
+    DBG_GYRO_BIAS_Z,
    
     // Covariance vector
     DBG_COV_VEL_X,
@@ -79,9 +80,9 @@ enum DebugValue {
 typedef struct {
     // Controller Inputs
     u32 pressure; // Pa
-    i16 imu_acc_x;
-    i16 imu_acc_y;
-    i16 imu_acc_z;
+    f64 imu_acc_x;
+    f64 imu_acc_y;
+    f64 imu_acc_z;
     f64 imu_gyro_x;
     f64 imu_gyro_y;
     f64 imu_gyro_z;

@@ -265,7 +265,7 @@ enum {
 
 Mat X = { .r=S_STATE_DIM, .c=1 };
 
-Mat F(Mat Xp, vec3 gyro_meas, f64 thrust) {
+Mat F(Mat Xp, vec3 acc_meas, vec3 gyro_meas) {
     // Orientation integration
     // q += q 1/2 wq dt
     quat q = QUAT_FROM_STATE(Xp);
@@ -285,17 +285,23 @@ Mat F(Mat Xp, vec3 gyro_meas, f64 thrust) {
     quat_norm(&q);
     
     // World acceleration
-    vec3 b_acc = {.x=0.0, .y=0.0, .z=thrust/mass };
-    vec3 w_acc = vec3_rotate_by_quat(&b_acc, &q);
-    w_acc.z -= G;
+    vec3 body_acc = {
+        .x = acc_meas.x, // - Xp.data[S_ACC_BIAS_X],
+        .y = acc_meas.y, // - Xp.data[S_ACC_BIAS_Y],
+        .z = acc_meas.z, // - Xp.data[S_ACC_BIAS_Z],
+    };
+
+    vec3 world_acc = vec3_rotate_by_quat(&body_acc, &q);
+    world_acc.z -= G;
 
     return (Mat) { .r=S_STATE_DIM, .c=1, {
-        Xp.data[S_POS_X] + Xp.data[S_VEL_X]*c_dt + 0.5*w_acc.x*c_dt*c_dt,  // pos_x
-        Xp.data[S_POS_Y] + Xp.data[S_VEL_Y]*c_dt + 0.5*w_acc.y*c_dt*c_dt,  // pos_y
-        Xp.data[S_POS_Z] + Xp.data[S_VEL_Z]*c_dt + 0.5*w_acc.z*c_dt*c_dt,  // pos_z
-        Xp.data[S_VEL_X] + w_acc.x*c_dt,                                   // vel_x
-        Xp.data[S_VEL_Y] + w_acc.y*c_dt,                                   // vel_y
-        Xp.data[S_VEL_Z] + w_acc.z*c_dt,                                   // vel_z
+        Xp.data[S_POS_X] + Xp.data[S_VEL_X]*c_dt + 0.5*world_acc.x*c_dt*c_dt,  // pos_x
+        Xp.data[S_POS_Y] + Xp.data[S_VEL_Y]*c_dt + 0.5*world_acc.y*c_dt*c_dt,  // pos_y
+        Xp.data[S_POS_Z] + Xp.data[S_VEL_Z]*c_dt + 0.5*world_acc.z*c_dt*c_dt,  // pos_z
+        Xp.data[S_VEL_X] + world_acc.x*c_dt,                                   // vel_x
+        Xp.data[S_VEL_Y] + world_acc.y*c_dt,                                   // vel_y
+        Xp.data[S_VEL_Z] + world_acc.z*c_dt,                                   // vel_z
+        //Xp.data[S_ACC_BIAS_Z],
         q.r,
         q.i,
         q.j,
@@ -306,13 +312,17 @@ Mat F(Mat Xp, vec3 gyro_meas, f64 thrust) {
     }};
 }
 
-Mat J(Mat Xp, vec3 gyro_meas, f64 thrust) {
-    f64 baz = thrust/mass;
-    
+Mat J(Mat Xp, vec3 acc_meas, vec3 gyro_meas) {
     vec3 omega = {
         gyro_meas.x - Xp.data[S_OMEGA_BIAS_X],
         gyro_meas.y - Xp.data[S_OMEGA_BIAS_Y],
         gyro_meas.z - Xp.data[S_OMEGA_BIAS_Z]
+    };
+    
+    vec3 body_acc = {
+        .x = acc_meas.x, // - Xp.data[S_ACC_BIAS_X],
+        .y = acc_meas.y, // - Xp.data[S_ACC_BIAS_Y],
+        .z = acc_meas.z, // - Xp.data[S_ACC_BIAS_Z],
     };
 
     Mat J = { .r=S_STATE_DIM, .c=S_STATE_DIM };
@@ -325,28 +335,31 @@ Mat J(Mat Xp, vec3 gyro_meas, f64 thrust) {
     //            = 1/2 dt^2 |    2 baz (qi qk + qj qr)      |
     //                       |    2 baz (qj qk - qi qr)      |
     //                       | baz - 2 baz (qi^2 + qj^2) - G |
-    //            = dt^2 |       baz (qi qk + qj qr)      |
-    //                   |       baz (qj qk - qi qr)      |
-    //                   | 1/2baz - baz (qi^2 + qj^2) - G |
+    //            = dt^2 |          (az - bz) (qi qk + qj qr)          |
+    //                   |          (az - bz) (qj qk - qi qr)          |
+    //                   | 1/2 (az - bz) - (az - bz) (qi^2 + qj^2) - G |
 
-    MAT_AT(J, S_POS_X, S_POS_X) =   1;
-    MAT_AT(J, S_POS_X, S_VEL_X) =   c_dt;
-    MAT_AT(J, S_POS_X, S_QUAT_R) =  baz*Xp.data[S_QUAT_J]*c_dt*c_dt;
-    MAT_AT(J, S_POS_X, S_QUAT_I) =  baz*Xp.data[S_QUAT_K]*c_dt*c_dt;
-    MAT_AT(J, S_POS_X, S_QUAT_J) =  baz*Xp.data[S_QUAT_R]*c_dt*c_dt;
-    MAT_AT(J, S_POS_X, S_QUAT_K) =  baz*Xp.data[S_QUAT_I]*c_dt*c_dt;
+    MAT_AT(J, S_POS_X, S_POS_X) =       1;
+    MAT_AT(J, S_POS_X, S_VEL_X) =       c_dt;
+    MAT_AT(J, S_POS_X, S_QUAT_R) =      body_acc.z*Xp.data[S_QUAT_J]*c_dt*c_dt;
+    MAT_AT(J, S_POS_X, S_QUAT_I) =      body_acc.z*Xp.data[S_QUAT_K]*c_dt*c_dt;
+    MAT_AT(J, S_POS_X, S_QUAT_J) =      body_acc.z*Xp.data[S_QUAT_R]*c_dt*c_dt;
+    MAT_AT(J, S_POS_X, S_QUAT_K) =      body_acc.z*Xp.data[S_QUAT_I]*c_dt*c_dt;
+    //MAT_AT(J, S_POS_X, S_ACC_BIAS_Z) = -(Xp.data[S_QUAT_I]*Xp.data[S_QUAT_K] + Xp.data[S_QUAT_J]*Xp.data[S_QUAT_R])*c_dt*c_dt;
 
-    MAT_AT(J, S_POS_Y, S_POS_Y) =   1;
-    MAT_AT(J, S_POS_Y, S_VEL_Y) =   c_dt;
-    MAT_AT(J, S_POS_Y, S_QUAT_R) = -baz*Xp.data[S_QUAT_I]*c_dt*c_dt;
-    MAT_AT(J, S_POS_Y, S_QUAT_I) = -baz*Xp.data[S_QUAT_R]*c_dt*c_dt;
-    MAT_AT(J, S_POS_Y, S_QUAT_J) =  baz*Xp.data[S_QUAT_K]*c_dt*c_dt;
-    MAT_AT(J, S_POS_Y, S_QUAT_K) =  baz*Xp.data[S_QUAT_J]*c_dt*c_dt;
+    MAT_AT(J, S_POS_Y, S_POS_Y) =       1;
+    MAT_AT(J, S_POS_Y, S_VEL_Y) =       c_dt;
+    MAT_AT(J, S_POS_Y, S_QUAT_R) =     -body_acc.z*Xp.data[S_QUAT_I]*c_dt*c_dt;
+    MAT_AT(J, S_POS_Y, S_QUAT_I) =     -body_acc.z*Xp.data[S_QUAT_R]*c_dt*c_dt;
+    MAT_AT(J, S_POS_Y, S_QUAT_J) =      body_acc.z*Xp.data[S_QUAT_K]*c_dt*c_dt;
+    MAT_AT(J, S_POS_Y, S_QUAT_K) =      body_acc.z*Xp.data[S_QUAT_J]*c_dt*c_dt;
+    //MAT_AT(J, S_POS_Y, S_ACC_BIAS_Z) = -(Xp.data[S_QUAT_J]*Xp.data[S_QUAT_K] - Xp.data[S_QUAT_I]*Xp.data[S_QUAT_R])*c_dt*c_dt;
     
-    MAT_AT(J, S_POS_Z, S_POS_Z) =   1;
-    MAT_AT(J, S_POS_Z, S_VEL_Z) =   c_dt;
-    MAT_AT(J, S_POS_Z, S_QUAT_I) = -2.0*baz*Xp.data[S_QUAT_I]*c_dt*c_dt;
-    MAT_AT(J, S_POS_Z, S_QUAT_J) = -2.0*baz*Xp.data[S_QUAT_J]*c_dt*c_dt;
+    MAT_AT(J, S_POS_Z, S_POS_Z) =       1;
+    MAT_AT(J, S_POS_Z, S_VEL_Z) =       c_dt;
+    MAT_AT(J, S_POS_Z, S_QUAT_I) =     -2.0*body_acc.z*Xp.data[S_QUAT_I]*c_dt*c_dt;
+    MAT_AT(J, S_POS_Z, S_QUAT_J) =     -2.0*body_acc.z*Xp.data[S_QUAT_J]*c_dt*c_dt;
+    //MAT_AT(J, S_POS_Z, S_ACC_BIAS_Z) = (-0.5 + Xp.data[S_QUAT_I]*Xp.data[S_QUAT_I] + Xp.data[S_QUAT_J]*Xp.data[S_QUAT_J])*c_dt*c_dt;
 
     // --- Velocity ---
     // https://en.wikipedia.org/wiki/Quaternions_and_spatial_rotation#Quaternion-derived_rotation_matrix
@@ -359,27 +372,32 @@ Mat J(Mat Xp, vec3 gyro_meas, f64 thrust) {
     //      | baz - 2 baz (qi^2 + qj^2) - G |
     
     // v = v + wa dt
-    //   = |    vx + (2 baz (qi qk + qj qr)) dt      |
-    //     |    vy + (2 baz (qj qk - qi qr)) dt      |
-    //     | vz + (baz - 2 baz (qi^2 + qj^2) - G) dt |
+    //   = |        vx + (2 (az - bz) (qi qk + qj qr)) dt        |
+    //     |        vy + (2 (bz - bz) (qj qk - qi qr)) dt        |
+    //     | vz + ((az - bz) - 2 (az - bz) (qi^2 + qj^2) - G) dt |
 
-    MAT_AT(J, S_VEL_X, S_VEL_X) =   1;
-    MAT_AT(J, S_VEL_X, S_QUAT_R) =  2.0*baz*Xp.data[S_QUAT_J]*c_dt;
-    MAT_AT(J, S_VEL_X, S_QUAT_I) =  2.0*baz*Xp.data[S_QUAT_K]*c_dt;
-    MAT_AT(J, S_VEL_X, S_QUAT_J) =  2.0*baz*Xp.data[S_QUAT_R]*c_dt;
-    MAT_AT(J, S_VEL_X, S_QUAT_K) =  2.0*baz*Xp.data[S_QUAT_I]*c_dt;
+    MAT_AT(J, S_VEL_X, S_VEL_X) =       1;
+    MAT_AT(J, S_VEL_X, S_QUAT_R) =      2.0*body_acc.z*Xp.data[S_QUAT_J]*c_dt;
+    MAT_AT(J, S_VEL_X, S_QUAT_I) =      2.0*body_acc.z*Xp.data[S_QUAT_K]*c_dt;
+    MAT_AT(J, S_VEL_X, S_QUAT_J) =      2.0*body_acc.z*Xp.data[S_QUAT_R]*c_dt;
+    MAT_AT(J, S_VEL_X, S_QUAT_K) =      2.0*body_acc.z*Xp.data[S_QUAT_I]*c_dt;
+    //MAT_AT(J, S_VEL_X, S_ACC_BIAS_Z) = -2.0*(Xp.data[S_QUAT_I]*Xp.data[S_QUAT_K] + Xp.data[S_QUAT_J]*Xp.data[S_QUAT_R])*c_dt;
     
-    MAT_AT(J, S_VEL_Y, S_VEL_Y) =   1;
-    MAT_AT(J, S_VEL_Y, S_QUAT_R) = -2.0*baz*Xp.data[S_QUAT_I]*c_dt;
-    MAT_AT(J, S_VEL_Y, S_QUAT_I) = -2.0*baz*Xp.data[S_QUAT_R]*c_dt;
-    MAT_AT(J, S_VEL_Y, S_QUAT_J) =  2.0*baz*Xp.data[S_QUAT_K]*c_dt;
-    MAT_AT(J, S_VEL_Y, S_QUAT_K) =  2.0*baz*Xp.data[S_QUAT_J]*c_dt;
+    MAT_AT(J, S_VEL_Y, S_VEL_Y) =       1;
+    MAT_AT(J, S_VEL_Y, S_QUAT_R) =     -2.0*body_acc.z*Xp.data[S_QUAT_I]*c_dt;
+    MAT_AT(J, S_VEL_Y, S_QUAT_I) =     -2.0*body_acc.z*Xp.data[S_QUAT_R]*c_dt;
+    MAT_AT(J, S_VEL_Y, S_QUAT_J) =      2.0*body_acc.z*Xp.data[S_QUAT_K]*c_dt;
+    MAT_AT(J, S_VEL_Y, S_QUAT_K) =      2.0*body_acc.z*Xp.data[S_QUAT_J]*c_dt;
+    //MAT_AT(J, S_VEL_Y, S_ACC_BIAS_Z) = -2.0*(Xp.data[S_QUAT_J]*Xp.data[S_QUAT_K] - Xp.data[S_QUAT_I]*Xp.data[S_QUAT_R])*c_dt;
     
     // vz + (az - 2 az qi^2 - 2 az qj^2 - G) dt
-    MAT_AT(J, S_VEL_Z, S_VEL_Z) =   1;
-    MAT_AT(J, S_VEL_Z, S_QUAT_I) =  -4.0*baz*Xp.data[S_QUAT_I]*c_dt;
-    MAT_AT(J, S_VEL_Z, S_QUAT_J) =  -4.0*baz*Xp.data[S_QUAT_J]*c_dt;
+    MAT_AT(J, S_VEL_Z, S_VEL_Z) =       1;
+    MAT_AT(J, S_VEL_Z, S_QUAT_I) =     -4.0*body_acc.z*Xp.data[S_QUAT_I]*c_dt;
+    MAT_AT(J, S_VEL_Z, S_QUAT_J) =     -4.0*body_acc.z*Xp.data[S_QUAT_J]*c_dt;
+    //MAT_AT(J, S_VEL_Z, S_ACC_BIAS_Z) = -c_dt + 2.0*(Xp.data[S_QUAT_I]*Xp.data[S_QUAT_I] + Xp.data[S_QUAT_J]*Xp.data[S_QUAT_J])*c_dt;
 
+    //MAT_AT(J, S_ACC_BIAS_Z, S_ACC_BIAS_Z) = 1.0;
+    
     // --- Orientation ---
     // wq = [0, rx, ry, rz]
     // q = q + 1/2 q wq dt
@@ -468,6 +486,12 @@ void c_init() {
     MAT_AT(Q, S_QUAT_J, S_QUAT_J) = 1e-4;
     MAT_AT(Q, S_QUAT_K, S_QUAT_K) = 1e-4;
     
+    // --- Accelerometer random walk ---
+    //MAT_AT(P, S_ACC_BIAS_Z, S_ACC_BIAS_Z) = 1e-2;
+    
+    f64 acc_bias_random_walk = 1e-1; // m/s^2 / sqrt(s)
+    f64 acc_bias_var = acc_bias_random_walk * acc_bias_random_walk * c_dt;
+    //MAT_AT(Q, S_ACC_BIAS_Z, S_ACC_BIAS_Z) = acc_bias_var;
 
     // --- Omega ---
     // State covariance matrix
@@ -479,9 +503,9 @@ void c_init() {
     SET_XYZ(Q, S_OMEGA_BIAS_X, S_OMEGA_BIAS_X, gyro_bias_var);
 }
 
-void ekf_predict(vec3 gyro_meas, f64 thrust) {
+void ekf_predict(vec3 acc_meas, vec3 gyro_meas) {
     // P = J(X) P J(X)' + Q
-    Mat Jx = J(X, gyro_meas, thrust);
+    Mat Jx = J(X, acc_meas, gyro_meas);
     P = mat_mul(&Jx, &P);
 
     Mat Jx_t = mat_trans(&Jx);
@@ -490,7 +514,7 @@ void ekf_predict(vec3 gyro_meas, f64 thrust) {
     P = mat_sum(&P, &Q);
     
     // X = F(X)
-    Mat new_X = F(X, gyro_meas, thrust);
+    Mat new_X = F(X, acc_meas, gyro_meas);
    
 #ifndef NDEBUG
     Mat I = mat_sub(&new_X, &X);
@@ -503,7 +527,7 @@ void ekf_predict(vec3 gyro_meas, f64 thrust) {
 
         f64 sigma = sqrt(MAT_AT(P, i, i));   // expected stddev of residual
         if (sigma > 1e-12 && vi > 5.0 * sigma) {
-            DBG_BREAK();
+            //DBG_BREAK();
         }
     }
 #endif
@@ -916,6 +940,7 @@ u64 mag_l = 0;
 f64 c_rot_w[NUM_ROT] = {0};
 
 vec3 gyro_meas = {0};
+vec3 acc_meas =  {0};
 
 // Assume that the control_step() function is triggered by an interrupt
 // in the MCU every 1ms (1000Hz)
@@ -933,12 +958,12 @@ void c_step(ControllerInterface *intr) {
     intr->dbg[DBG_ROT_W0] = c_rot_w[0];
 #endif
 
-    f64 tot_mot_f = 0.0;
-    for (u64 i=0; i<NUM_ROT; i++) {
-        tot_mot_f += kf * c_rot_w[i] * c_rot_w[i];
-    }
+    //f64 tot_mot_f = 0.0;
+    //for (u64 i=0; i<NUM_ROT; i++) {
+    //    tot_mot_f += kf * c_rot_w[i] * c_rot_w[i];
+    //}
     
-    ekf_predict(gyro_meas, tot_mot_f);
+    ekf_predict(acc_meas, gyro_meas);
 
     // --- Read sensors ---
     // --- Barometer ---
@@ -970,41 +995,37 @@ void c_step(ControllerInterface *intr) {
         imu_l=0;
 
         // Body-frame accelerations
-        f64 ax = imu_acc_to_ms2(intr->imu_acc_x); 
-        f64 ay = imu_acc_to_ms2(intr->imu_acc_y); 
-        f64 az = imu_acc_to_ms2(intr->imu_acc_z);
+        f64 ax = intr->imu_acc_x; 
+        f64 ay = intr->imu_acc_y; 
+        f64 az = intr->imu_acc_z;
 
 #ifdef CONTROL_DEBUG
         intr->dbg[DBG_IN_ACC_X] = ax;
         intr->dbg[DBG_IN_ACC_Y] = ay;
         intr->dbg[DBG_IN_ACC_Z] = az;
 #endif
-        f64 mag = sqrt(ax*ax + ay*ay + az*az); 
-        if (fabs(mag - G) < 0.1*G && fabs(ax) < 0.1*G && fabs(ay) < 0.1*G) {
-            Mat Z = { .r=3, .c=1, {
-                ax,
-                ay,
-                az,
-            }};
-        
-            Mat R = { .r=Z.r, .c=Z.r };
-        
-            // Exponential gating
-            f64 e = fabs(mag - G);
-            f64 scale = pow(2, e);
-        
-            f64 acc_sdev = 0.2; //0.00637;
-            f64 acc_var = acc_sdev * acc_sdev;
-            MAT_AT(R, 0, 0) = acc_var;
-            MAT_AT(R, 1, 1) = acc_var;
-            MAT_AT(R, 2, 2) = acc_var;
-        
-            //ekf_correct(&Z, h_accelerometer, H_accelerometer, &R);
-        }
 
-        // This assumes an ideal hover state. I wonder if there are
-        // ways to subtract the effect of the known acceleration from this (Is 
-        // this even stable?)
+        acc_meas = (vec3) {
+            ax, ay, az
+        };
+
+        //Mat Z = { .r=3, .c=1, {
+        //    ax,
+        //    ay,
+        //    az,
+        //}};
+        
+        //Mat R = { .r=Z.r, .c=Z.r };
+        
+        // Exponential gating
+        //f64 e = fabs(mag - G);
+        //f64 scale = pow(2, e);
+        
+        //f64 acc_sdev = 0.2; //0.00637;
+        //f64 acc_var = acc_sdev * acc_sdev;
+        //MAT_AT(R, 0, 0) = acc_var;
+        //MAT_AT(R, 1, 1) = acc_var;
+        //MAT_AT(R, 2, 2) = acc_var;
 
         // World-frame accelerations
         f64 gyro_rate_x = intr->imu_gyro_x;
@@ -1248,6 +1269,8 @@ void c_step(ControllerInterface *intr) {
     intr->dbg[DBG_VEL_Y] = X.data[S_VEL_Y];
     intr->dbg[DBG_VEL_Z] = X.data[S_VEL_Z];
     
+    //intr->dbg[DBG_ACC_BIAS_Z] = X.data[S_ACC_BIAS_Z];
+    
     intr->dbg[DBG_ORI_X] = ori.x;
     intr->dbg[DBG_ORI_Y] = ori.y;
     intr->dbg[DBG_ORI_Z] = ori.z;
@@ -1256,9 +1279,9 @@ void c_step(ControllerInterface *intr) {
     intr->dbg[DBG_OMEGA_Y] = omega.y; //X.data[S_OMEGA_Y];
     intr->dbg[DBG_OMEGA_Z] = omega.z; //X.data[S_OMEGA_Z];
     
-    intr->dbg[DBG_OMEGA_BIAS_X] = X.data[S_OMEGA_BIAS_X]; //X.data[S_OMEGA_X];
-    intr->dbg[DBG_OMEGA_BIAS_Y] = X.data[S_OMEGA_BIAS_Y]; //X.data[S_OMEGA_Y];
-    intr->dbg[DBG_OMEGA_BIAS_Z] = X.data[S_OMEGA_BIAS_Z]; //X.data[S_OMEGA_Z];
+    intr->dbg[DBG_GYRO_BIAS_X] = X.data[S_OMEGA_BIAS_X]; //X.data[S_OMEGA_X];
+    intr->dbg[DBG_GYRO_BIAS_Y] = X.data[S_OMEGA_BIAS_Y]; //X.data[S_OMEGA_Y];
+    intr->dbg[DBG_GYRO_BIAS_Z] = X.data[S_OMEGA_BIAS_Z]; //X.data[S_OMEGA_Z];
 
     // Covariance vector
     intr->dbg[DBG_COV_VEL_X] = MAT_AT(P, S_VEL_X, S_VEL_X);

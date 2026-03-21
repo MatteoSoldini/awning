@@ -23,7 +23,7 @@
 #include "control/control.h"
 #include "consts.h"
 
-#define CAM_MIN_RADIUS 0.5
+#define CAM_MIN_RADIUS   0.5
 #define CAM_SCROLL_SPEED 1.0
 
 // App state
@@ -141,6 +141,9 @@ enum {
     DBG_REAL_ORI_X,
     DBG_REAL_ORI_Y,
     DBG_REAL_ORI_Z,
+    DBG_REAL_ACC_BIAS_X,
+    DBG_REAL_ACC_BIAS_Y,
+    DBG_REAL_ACC_BIAS_Z,
     DBG_REAL_GYRO_BIAS_X,
     DBG_REAL_GYRO_BIAS_Y,
     DBG_REAL_GYRO_BIAS_Z,
@@ -303,10 +306,13 @@ const f64 imu_acc_max_value = 8.0*G;     // m/s^2  TO CHECK
 
 const f64 imu_gyro_sdev = 0.05 * DEG2RAD; // rad/s
 const f64 imu_gyro_max_value = 250.0;     // rad/s  TO CHECK
-vec3 imu_gyro_bias = {0};
 
 // Unmodelled bias random walk (ex. temperature, mechanical, ...)
+const f64 imu_acc_bias_random_walk = 0.0; // 1e-1; // m/s^2 / sqrt(s)
+vec3 imu_acc_bias = {0};
+
 const f64 imu_gyro_bias_random_walk = 0.5 * DEG2RAD; // rad/s / sqrt(s)
+vec3 imu_gyro_bias = {0};
 
 // GNSS parameters
 // reference: u-blox NEO-M8N
@@ -414,9 +420,13 @@ void world_step() {
         vec3 p_acc = vec3_sub(&b_obj_acc, &b_g_acc);
 
         // Convert world accel to body frame (rotate by inverse quaternion)
-        ctr_intr.imu_acc_x = simulate_sensor(p_acc.x, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-        ctr_intr.imu_acc_y = simulate_sensor(p_acc.y, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
-        ctr_intr.imu_acc_z = simulate_sensor(p_acc.z, imu_acc_max_value, -imu_acc_max_value, imu_acc_sdev, imu_read_bits);
+        imu_acc_bias.x += imu_acc_bias_random_walk / sqrt(imu_upt_fq) * rand_gauss();
+        imu_acc_bias.y += imu_acc_bias_random_walk / sqrt(imu_upt_fq) * rand_gauss();
+        imu_acc_bias.z += imu_acc_bias_random_walk / sqrt(imu_upt_fq) * rand_gauss();
+        
+        ctr_intr.imu_acc_x = p_acc.x + imu_acc_sdev * rand_gauss() + imu_acc_bias.x;
+        ctr_intr.imu_acc_y = p_acc.y + imu_acc_sdev * rand_gauss() + imu_acc_bias.y;
+        ctr_intr.imu_acc_z = p_acc.z + imu_acc_sdev * rand_gauss() + imu_acc_bias.z;
 
         // --- Gyroscope ---
         // omega_measured = omega_real + omega_bias + omega_noise
@@ -468,6 +478,10 @@ void world_step() {
         cb_push(&sim_cbs[DBG_REAL_ORI_Y], obj_angles.y);
         cb_push(&sim_cbs[DBG_REAL_ORI_Z], obj_angles.z);
 
+        cb_push(&sim_cbs[DBG_REAL_ACC_BIAS_X], imu_acc_bias.x);
+        cb_push(&sim_cbs[DBG_REAL_ACC_BIAS_Y], imu_acc_bias.y);
+        cb_push(&sim_cbs[DBG_REAL_ACC_BIAS_Z], imu_acc_bias.z);
+        
         cb_push(&sim_cbs[DBG_REAL_GYRO_BIAS_X], imu_gyro_bias.x);
         cb_push(&sim_cbs[DBG_REAL_GYRO_BIAS_Y], imu_gyro_bias.y);
         cb_push(&sim_cbs[DBG_REAL_GYRO_BIAS_Z], imu_gyro_bias.z);
@@ -954,22 +968,22 @@ int main(void) {
             int num_gds = 4;
             GraphData gds[MAX_GDS] = {
                 {
-                    .cb = &sim_cbs[DBG_REAL_ORI_Z],
+                    .cb = &sim_cbs[DBG_REAL_ORI_Y],
                     .color = RED,
                     .name = "CH1"
                 },
                 {
-                    .cb = &ctr_dbg_cbs[DBG_ORI_Z],
+                    .cb = &ctr_dbg_cbs[DBG_ORI_Y],
                     .color = YELLOW,
                     .name = "CH4"
                 },
                 {
-                    .cb = &ctr_dbg_cbs[DBG_OMEGA_BIAS_Y],
+                    .cb = &ctr_dbg_cbs[DBG_ACC_BIAS_Z],
                     .color = BLUE,
                     .name = "CH2"
                 },
                 {
-                    .cb = &sim_cbs[DBG_REAL_GYRO_BIAS_Y],
+                    .cb = &sim_cbs[DBG_REAL_ACC_BIAS_Y],
                     .color = GREEN,
                     .name = "CH3"
                 }
