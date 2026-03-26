@@ -690,8 +690,8 @@ Vector3 phy_to_raylib(vec3 *v) {
 }
 
 int main(void) {
-    i32 win_w = 1920;
-    i32 win_h = 1080;
+    i32 win_w = 1280;
+    i32 win_h = 720;
     
     const i32 left_panel_width = 300;
     const i32 bottom_panel_height = 300;

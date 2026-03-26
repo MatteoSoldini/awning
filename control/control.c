@@ -312,6 +312,99 @@ Mat F(Mat Xp, vec3 acc_meas, vec3 gyro_meas) {
     }};
 }
 
+enum {
+    ERR_S_POS_X,        // m
+    ERR_S_POS_Y,        // m
+    ERR_S_POS_Z,        // m
+    ERR_S_VEL_X,        // m/s
+    ERR_S_VEL_Y,        // m/s
+    ERR_S_VEL_Z,        // m/s
+    ERR_S_THETA_X,
+    ERR_S_THETA_Y,
+    ERR_S_THETA_Z,
+    ERR_S_OMEGA_BIAS_X,
+    ERR_S_OMEGA_BIAS_Y,
+    ERR_S_OMEGA_BIAS_Z,
+    ERR_S_STATE_DIM
+};
+
+Mat err_X = { .r=ERR_S_STATE_DIM, .c=1 };
+
+Mat err_F(Mat X, Mat err_X, vec3 acc_meas, vec3 gyro_meas) {
+    vec3 err_pos = {
+        err_X.data[ERR_S_POS_X],
+        err_X.data[ERR_S_POS_Y],
+        err_X.data[ERR_S_POS_Z]
+    };
+    
+    vec3 err_vel = {
+        err_X.data[ERR_S_VEL_X],
+        err_X.data[ERR_S_VEL_Y],
+        err_X.data[ERR_S_VEL_Z]
+    };
+
+    vec3 err_theta = {
+        err_X.data[ERR_S_THETA_X],
+        err_X.data[ERR_S_THETA_Y],
+        err_X.data[ERR_S_THETA_Z]
+    };
+
+    quat q = QUAT_FROM_STATE(X);
+
+    vec3 omega_bias = {
+        X.data[S_OMEGA_BIAS_X],
+        X.data[S_OMEGA_BIAS_Y],
+        X.data[S_OMEGA_BIAS_Z]
+    };
+    
+    vec3 err_omega_bias = {
+        err_X.data[S_OMEGA_BIAS_X],
+        err_X.data[S_OMEGA_BIAS_Y],
+        err_X.data[S_OMEGA_BIAS_Z]
+    };
+
+    // err_pos = err_pos + err_vel * dt
+    vec3 err_vel_delta = vec3_scale(&err_vel, c_dt);
+    vec3 new_err_pos = vec3_sum(&err_pos, &err_vel_delta);
+    
+    // err_vel = err_vel + (-R * a_meas x err_theta) * dt
+    vec3 body_term = vec3_cross(&acc_meas, &err_theta);
+    vec3 world_term = vec3_rotate_by_quat(&body_term, &q);
+    world_term = vec3_scale(&world_term, -c_dt);
+
+    vec3 new_err_vel = vec3_sum(&err_vel, &world_term);
+    
+    // err_theta = R'((gyro_meas - omega_bias) * dt) * err_theta - err_omega_bias * dt
+    vec3 omega_true = vec3_sub(&gyro_meas, &omega_bias);
+    omega_true = vec3_scale(&omega_true, c_dt);
+    quat q_inv = (quat) {
+        .r =  q.r,
+        .i = -q.i,
+        .j = -q.j,
+        .k = -q.k
+    };
+    vec3 body_omega_true = vec3_rotate_by_quat(&omega_true, &q_inv);
+    vec3 new_err_theta = vec3_dot(&body_omega_true, &err_theta);
+
+    vec3 err_omega_bias_delta = vec3_scale(&err_omega_bias, c_dt);
+    new_err_theta = vec3_sub(&new_err_theta, &err_omega_bias_delta);
+
+    return (Mat) { .r=ERR_S_STATE_DIM, .c=1, {
+        new_err_pos.x,
+        new_err_pos.y,
+        new_err_pos.z,
+        new_err_vel.x,
+        new_err_vel.y,
+        new_err_vel.z,
+        new_err_theta.x,
+        new_err_theta.y,
+        new_err_theta.z,
+        err_X.data[ERR_S_OMEGA_BIAS_X],
+        err_X.data[ERR_S_OMEGA_BIAS_Y],
+        err_X.data[ERR_S_OMEGA_BIAS_Z]
+    }};
+}
+
 Mat J(Mat Xp, vec3 acc_meas, vec3 gyro_meas) {
     vec3 omega = {
         gyro_meas.x - Xp.data[S_OMEGA_BIAS_X],
@@ -446,6 +539,10 @@ Mat J(Mat Xp, vec3 acc_meas, vec3 gyro_meas) {
     SET_XYZ(J, S_OMEGA_BIAS_X, S_OMEGA_BIAS_X, 1);    // Constant
 
     return J;
+}
+
+Mat err_J() {
+
 }
 
 // State covariance matrix
