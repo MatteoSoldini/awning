@@ -192,3 +192,24 @@ Mat mat_inv(Mat *M) {
 
     return M_inv;
 }
+
+Mat mat_skew_symm_from_vec3(vec3 *v) {
+    return (Mat) { .r=3, .c=3, {
+         0,    -v->z,  v->y,
+         v->z,  0,    -v->x,
+        -v->y,  v->x, 0
+    }};
+}
+
+Mat mat_from_quat(quat *q) {
+    f64 r = q->r;
+    f64 i = q->i;
+    f64 j = q->j;
+    f64 k = q->k;
+
+    return (Mat){ .r=3, .c=3, {
+        1 - 2*(j*j + k*k),   2*(i*j - k*r),       2*(i*k + j*r),
+        2*(i*j + k*r),       1 - 2*(i*i + k*k),   2*(j*k - i*r),
+        2*(i*k - j*r),       2*(j*k + i*r),       1 - 2*(i*i + j*j)
+    }};
+}

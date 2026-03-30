@@ -25,7 +25,24 @@ enum DebugValue {
     DBG_GYRO_BIAS_X,
     DBG_GYRO_BIAS_Y,
     DBG_GYRO_BIAS_Z,
-   
+
+    // Nominal state
+    DBG_NOM_POS_X,
+    DBG_NOM_POS_Y,
+    DBG_NOM_POS_Z,
+    DBG_NOM_VEL_X,
+    DBG_NOM_VEL_Y,
+    DBG_NOM_VEL_Z,
+    DBG_NOM_ORI_X,
+    DBG_NOM_ORI_Y,
+    DBG_NOM_ORI_Z,
+    DBG_NOM_OMEGA_X,
+    DBG_NOM_OMEGA_Y,
+    DBG_NOM_OMEGA_Z,
+    DBG_NOM_GYRO_BIAS_X,
+    DBG_NOM_GYRO_BIAS_Y,
+    DBG_NOM_GYRO_BIAS_Z,
+
     // Covariance vector
     DBG_COV_VEL_X,
     DBG_COV_VEL_Y,

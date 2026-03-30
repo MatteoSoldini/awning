@@ -965,8 +965,7 @@ int main(void) {
             );
             
             #define MAX_GDS 6
-            int num_gds = 4;
-            GraphData gds[MAX_GDS] = {
+            GraphData gds[] = {
                 {
                     .cb = &sim_cbs[DBG_REAL_ORI_Y],
                     .color = RED,
@@ -978,16 +977,27 @@ int main(void) {
                     .name = "CH4"
                 },
                 {
-                    .cb = &ctr_dbg_cbs[DBG_ACC_BIAS_Z],
+                    .cb = &ctr_dbg_cbs[DBG_NOM_ORI_Y],
                     .color = BLUE,
                     .name = "CH2"
                 },
                 {
-                    .cb = &sim_cbs[DBG_REAL_ACC_BIAS_Y],
+                    .cb = &sim_cbs[DBG_REAL_GYRO_BIAS_Y],
                     .color = GREEN,
-                    .name = "CH3"
-                }
+                    .name = "CH2"
+                },
+                {
+                    .cb = &ctr_dbg_cbs[DBG_NOM_GYRO_BIAS_Y],
+                    .color = PINK,
+                    .name = "CH2"
+                },
+                {
+                    .cb = &ctr_dbg_cbs[DBG_GYRO_BIAS_Y],
+                    .color = LIME,
+                    .name = "CH2"
+                },
             };
+            int num_gds = sizeof(gds) / sizeof(GraphData);
             DrawGraph(left_panel_width, win_h - bottom_panel_height, win_w - left_panel_width, bottom_panel_height, gds, num_gds);
 
             //char prs_txt[64];

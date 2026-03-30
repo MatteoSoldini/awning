@@ -4,6 +4,7 @@
 #define MAT_H
 
 #include <types.h>
+#include "./geom.h"
 
 #define MAT_SIZE 256
 typedef struct {
@@ -21,5 +22,7 @@ Mat mat_trans(Mat *M);
 Mat mat_identity(u64 size);
 void mat_print(Mat *M);
 Mat mat_inv(Mat *M);
+Mat mat_skew_symm_from_vec3(vec3 *v);
+Mat mat_from_quat(quat *q);
 
 #endif
