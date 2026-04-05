@@ -36,6 +36,7 @@ ControllerInterface ctr_intr = {0};
 bool run_sim = false;
 
 // Generate a random unitary gaussian distributed variable using Box–Muller transform
+
 f64 rand_gauss() {
     f64 u1 = (rand() + 1.0) / (RAND_MAX + 1.0);
     f64 u2 = (rand() + 1.0) / (RAND_MAX + 1.0);
@@ -308,7 +309,7 @@ const f64 imu_gyro_sdev = 0.05 * DEG2RAD; // rad/s
 const f64 imu_gyro_max_value = 250.0;     // rad/s  TO CHECK
 
 // Unmodelled bias random walk (ex. temperature, mechanical, ...)
-const f64 imu_acc_bias_random_walk = 0.0; // 1e-1; // m/s^2 / sqrt(s)
+const f64 imu_acc_bias_random_walk = 1e-1; // m/s^2 / sqrt(s)
 vec3 imu_acc_bias = {0};
 
 const f64 imu_gyro_bias_random_walk = 0.5 * DEG2RAD; // rad/s / sqrt(s)
@@ -690,6 +691,8 @@ Vector3 phy_to_raylib(vec3 *v) {
 }
 
 int main(void) {
+    srand(time(NULL)); // seed with current time
+    
     i32 win_w = 1280;
     i32 win_h = 720;
     
@@ -972,11 +975,6 @@ int main(void) {
                     .name = "CH1"
                 },
                 {
-                    .cb = &ctr_dbg_cbs[DBG_ORI_Y],
-                    .color = YELLOW,
-                    .name = "CH4"
-                },
-                {
                     .cb = &ctr_dbg_cbs[DBG_NOM_ORI_Y],
                     .color = BLUE,
                     .name = "CH2"
@@ -992,8 +990,13 @@ int main(void) {
                     .name = "CH2"
                 },
                 {
-                    .cb = &ctr_dbg_cbs[DBG_GYRO_BIAS_Y],
-                    .color = LIME,
+                    .cb = &sim_cbs[DBG_REAL_ACC_BIAS_X],
+                    .color = MAGENTA,
+                    .name = "CH2"
+                },
+                {
+                    .cb = &ctr_dbg_cbs[DBG_NOM_ACC_BIAS_X],
+                    .color = YELLOW,
                     .name = "CH2"
                 },
             };
