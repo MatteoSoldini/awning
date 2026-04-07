@@ -633,9 +633,9 @@ void DrawGraph(
 }
 
 void DrawAxisTexture(RenderTexture2D rt, Camera3D mainCam) {
-    const f32 radius = 0.1f;
-    const f32 circle_radius = 10.0f;
-    const i32 font_size = 16;
+    static const f32 radius = 0.1f;
+    static const f32 circle_radius = 10.0f;
+    static const i32 font_size = 16;
 
     Vector3 forward = Vector3Normalize(
         Vector3Subtract(mainCam.target, mainCam.position)
@@ -690,6 +690,42 @@ Vector3 phy_to_raylib(vec3 *v) {
     };
 }
 
+void drawDrone() {
+    // Drone body (center)
+    DrawCube((Vector3){0, 0, 0}, 0.1f, 0.05f, 0.1f, DARKGRAY);
+
+    for (i32 i=0; i<NUM_ROT; i++) {
+        vec3 rot_pos = {
+            .x = arm_dir[i].x * arm_l,
+            .y = arm_dir[i].y * arm_l,
+            .z = arm_dir[i].z * arm_l
+        };
+
+
+        Vector3 rot_pos_ray = phy_to_raylib(&rot_pos);
+        DrawCylinder(rot_pos_ray, 0.1f, 0.1f, 1e-2f, 16, BLACK);
+    }
+
+    static const float arrow_size = 0.05f;
+    static const float arrow_sep =  0.3f;
+                    // x,           z, -y
+    Vector3 left =  { -arrow_size,  0,  -arrow_sep                };
+    Vector3 right = {  arrow_size,  0,  -arrow_sep                };
+    Vector3 tip =   {  0,           0,  -(arrow_sep + arrow_size) };
+    DrawTriangle3D(left, right, tip, RED);
+    DrawTriangle3D(right, left, tip, RED);
+    
+    const float len = 0.2f;
+    Vector3 xEnd = { len, 0, 0  };
+    Vector3 yEnd = { 0, 0, -len };
+    Vector3 zEnd = { 0, len, 0  };
+    
+    static const f32 radius = 1e-2f;
+    DrawCylinderEx((Vector3){0,0,0}, xEnd, radius, radius, 8, RED);   // X
+    DrawCylinderEx((Vector3){0,0,0}, yEnd, radius, radius, 8, GREEN); // Y
+    DrawCylinderEx((Vector3){0,0,0}, zEnd, radius, radius, 8, BLUE);  // Z
+}
+
 int main(void) {
     srand((u32)get_micros()); // seed with current time
     
@@ -707,7 +743,7 @@ int main(void) {
     Camera3D camera = { 0 };
     camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };      // Camera looking at point
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
-    camera.fovy = 45.0f;                                // Camera field-of-view Y
+    camera.fovy = 60.0f;                                // Camera field-of-view X
     camera.projection = CAMERA_PERSPECTIVE;             // Camera mode type
 
     RenderTexture2D viewportRT = LoadRenderTexture(win_w - left_panel_width, win_h - bottom_panel_height);
@@ -783,8 +819,10 @@ int main(void) {
                     rot_mtx[9] = -rot_mtx[9];
                     rlMultMatrixf(rot_mtx);
 
-                    DrawCube((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), RED);
-                    DrawCubeWires((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), MAROON);
+                    drawDrone();
+
+                    //DrawCube((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), RED);
+                    //DrawCubeWires((Vector3){ 0.0f, 0.0f, 0.0f }, 2.0f*sqrtf((float)arm_l), 0.2, 2.0f*sqrtf((float)arm_l), MAROON);
 
                     // Draw debug accelerometer readings
                     Vector3 start = {0.0, 0.0, 0.0};
@@ -866,11 +904,11 @@ int main(void) {
             );
             
             i32 panel_center = left_panel_width / 2;
-
+            i32 arm_length = panel_center * 0.8;
             for (u64 i=0; i<NUM_ROT; i++) {
                 vec3 arm_d = arm_dir[i];
-                i32 m_pos_x = panel_center - arm_d.x * panel_center;
-                i32 m_pos_y = cur_y + panel_center - arm_d.y * panel_center;
+                i32 m_pos_x =         panel_center - arm_d.x * arm_length;
+                i32 m_pos_y = cur_y + panel_center - arm_d.y * arm_length;
                 
                 u8 start_color[3] = {0,   200, 0};
                 u8 end_color[3] =   {200, 0,   0};

@@ -162,8 +162,8 @@ PIDParams pos_pid_p = {
     .i = 0.0,
     .d = 0.0,
     .dt = c_dt,
-    .high = 0.5,    // m/s
-    .low = -0.5     // m/s
+    .high = 1.0,    // m/s
+    .low = -1.0     // m/s
 };
 PIDState pos_x_pid_s = {0};
 PIDState pos_y_pid_s = {0};
