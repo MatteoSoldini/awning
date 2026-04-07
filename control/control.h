@@ -45,6 +45,9 @@ enum DebugValue {
     DBG_NOM_GYRO_BIAS_X,
     DBG_NOM_GYRO_BIAS_Y,
     DBG_NOM_GYRO_BIAS_Z,
+    DBG_NOM_GRAVITY_X,
+    DBG_NOM_GRAVITY_Y,
+    DBG_NOM_GRAVITY_Z,
 
     // Covariance vector
     DBG_COV_VEL_X,

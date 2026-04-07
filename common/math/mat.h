@@ -6,7 +6,7 @@
 #include <types.h>
 #include "./geom.h"
 
-#define MAT_SIZE 256
+#define MAT_SIZE 512
 typedef struct {
     u16 r;
     u16 c;

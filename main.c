@@ -691,7 +691,7 @@ Vector3 phy_to_raylib(vec3 *v) {
 }
 
 int main(void) {
-    srand(time(NULL)); // seed with current time
+    srand((u32)get_micros()); // seed with current time
     
     i32 win_w = 1280;
     i32 win_h = 720;
@@ -967,7 +967,6 @@ int main(void) {
                 WHITE
             );
             
-            #define MAX_GDS 6
             GraphData gds[] = {
                 {
                     .cb = &sim_cbs[DBG_REAL_ORI_Y],
@@ -998,7 +997,7 @@ int main(void) {
                     .cb = &ctr_dbg_cbs[DBG_NOM_ACC_BIAS_X],
                     .color = YELLOW,
                     .name = "CH2"
-                },
+                }
             };
             int num_gds = sizeof(gds) / sizeof(GraphData);
             DrawGraph(left_panel_width, win_h - bottom_panel_height, win_w - left_panel_width, bottom_panel_height, gds, num_gds);
